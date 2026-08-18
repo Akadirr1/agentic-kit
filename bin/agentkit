@@ -1,0 +1,226 @@
+#!/usr/bin/env python3
+"""agentkit — scaffold and verify a multi-agent coordination layer in a project."""
+import argparse, json, os, shutil, subprocess, sys, tomllib
+from pathlib import Path
+
+KIT = Path(__file__).resolve().parent.parent
+# Copied verbatim on init AND refreshed by update. Never hand-edit in a project.
+CORE = {
+    "core/core.md":              "agents/core.md",
+    "core/checkpoint.sh":        "agents/checkpoint.sh",
+    "core/orchestrator.sh":      "agents/orchestrator.sh",
+}
+G, R, Y, D = "\033[32m", "\033[31m", "\033[33m", "\033[0m"
+ok = lambda m: print(f"  {G}ok{D}   {m}")
+bad = lambda m: print(f"  {R}FAIL{D} {m}")
+warn = lambda m: print(f"  {Y}warn{D} {m}")
+
+
+def settings_json(root: Path) -> dict:
+    sh = root / "agents" / "checkpoint.sh"
+    mk = lambda mode: [{"hooks": [{"type": "command",
+                                   "command": f'"{sh}" {mode}', "timeout": 10}]}]
+    return {"hooks": {"Stop": mk("save"), "SessionEnd": mk("close"),
+                      "SessionStart": mk("resume")}}
+
+
+def cmd_init(args):
+    root = Path.cwd()
+    name = args.project or root.name
+    preset = KIT / "presets" / args.preset if args.preset else None
+    if args.preset and not preset.is_dir():
+        sys.exit(f"preset not found: {args.preset}")
+    (root / "agents").mkdir(exist_ok=True)
+
+    def put(src: Path, dst: Path, executable=False):
+        if dst.exists() and not args.force:
+            warn(f"exists, skipped: {dst.relative_to(root)}")
+            return
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(src, dst)
+        if executable:
+            dst.chmod(0o755)
+        ok(f"wrote {dst.relative_to(root)}")
+
+    print("core (overwritten by `agentkit update`):")
+    for s, d in CORE.items():
+        put(KIT / s, root / d, executable=s.endswith(".sh"))
+
+    print("profiles and config:")
+    psrc = preset / "profiles" if preset else KIT / "profiles"
+    for f in sorted(psrc.glob("*.md")):
+        put(f, root / "agents" / f.name)
+    for src, dst in (("roles.toml", "agents/roles.toml"),
+                     ("orchestrator.md", "agents/orchestrator.md"),
+                     ("AGENTS.md", "AGENTS.md"),
+                     ("CLAUDE.md", "CLAUDE.md")):
+        cand = (preset / src) if preset and (preset / src).exists() else (KIT / "templates" / src)
+        if not cand.exists():
+            continue
+        target = root / dst
+        if target.exists() and not args.force:
+            warn(f"exists, skipped: {dst}")
+            continue
+        text = cand.read_text(encoding="utf-8").replace("{{PROJECT}}", name)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(text, encoding="utf-8")
+        ok(f"wrote {dst}")
+
+    print("hooks:")
+    sp = root / ".claude" / "settings.json"
+    sp.parent.mkdir(exist_ok=True)
+    cur = json.loads(sp.read_text(encoding="utf-8")) if sp.exists() else {}
+    cur.setdefault("hooks", {}).update(settings_json(root)["hooks"])
+    sp.write_text(json.dumps(cur, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    ok(".claude/settings.json (project-level; global settings untouched)")
+
+    gi = root / ".gitignore"
+    line = "/.orchestrator/"
+    body = gi.read_text(encoding="utf-8") if gi.exists() else ""
+    if line not in body:
+        gi.write_text(body + ("" if body.endswith("\n") or not body else "\n") + line + "\n",
+                      encoding="utf-8")
+        ok(".gitignore += /.orchestrator/")
+    print(f"\n{G}done{D}  next: fill the placeholders in AGENTS.md, then run `agentkit doctor`")
+
+
+def cmd_update(args):
+    root = Path.cwd()
+    if not (root / "agents").is_dir():
+        sys.exit("no agents/ here — run `agentkit init` first")
+    for s, d in CORE.items():
+        src, dst = KIT / s, root / d
+        same = dst.exists() and dst.read_bytes() == src.read_bytes()
+        shutil.copyfile(src, dst)
+        if s.endswith(".sh"):
+            dst.chmod(0o755)
+        (ok if same else print)(f"  {'unchanged' if same else G+'updated  '+D} {d}")
+    print(f"\nproject files were not touched — only core/ is managed by the kit")
+
+
+def have(exe):
+    return shutil.which(exe) is not None
+
+
+def agy_models():
+    try:
+        out = subprocess.run(["agy", "models"], capture_output=True, text=True, timeout=45).stdout
+        return {l.split("\t")[0].strip() for l in out.splitlines() if "\t" in l}
+    except Exception:
+        return set()
+
+
+def cmd_doctor(args):
+    root = Path.cwd()
+    fails = 0
+
+    print("layout:")
+    for p in ("agents/roles.toml", "agents/core.md", "agents/orchestrator.md",
+              "agents/checkpoint.sh", "AGENTS.md", "CLAUDE.md"):
+        (ok if (root / p).exists() else bad)(p)
+        fails += not (root / p).exists()
+    if not (root / "agents/roles.toml").exists():
+        sys.exit(f"\n{R}stop{D}  no roles.toml")
+
+    print("\nroles.toml:")
+    try:
+        cfg = tomllib.load(open(root / "agents/roles.toml", "rb"))
+        ok("parses")
+    except Exception as e:
+        bad(f"parse error: {e}")
+        sys.exit(1)
+    toggles = cfg.get("settings", {})
+    for k, v in toggles.items():
+        (warn if v is False else ok)(f"{k} = {v}" + ("  (fallbacks active)" if v is False else ""))
+
+    roles = cfg.get("roles", {})
+    clis, models = {}, {}
+    for name, r in roles.items():
+        fb = r.get("fallback")
+        use = fb if (fb and toggles.get(f"{r['cli']}_available", True) is False) else r
+        clis.setdefault(use["cli"], []).append(name)
+        models.setdefault(use["cli"], set()).add(use["model"])
+        prof = r.get("profile")
+        if prof and not (root / "agents" / prof).exists():
+            bad(f"{name}: profile missing — agents/{prof}")
+            fails += 1
+
+    print("\nCLIs in use:")
+    for cli, names in sorted(clis.items()):
+        (ok if have(cli) else bad)(f"{cli:7} <- {', '.join(sorted(names))}")
+        fails += not have(cli)
+
+    if "agy" in models and have("agy"):
+        print("\nagy model ids:")
+        known = agy_models()
+        if not known:
+            warn("could not list models (offline or not signed in)")
+        for m in sorted(models["agy"]):
+            (ok if m in known else bad)(m)
+            fails += bool(known) and m not in known
+
+    if "claude" in models:
+        print("\nclaude model ids:")
+        aliases = {"fable", "opus", "sonnet", "haiku"}
+        for m in sorted(models["claude"]):
+            (ok if (m in aliases or m.startswith("claude-")) else warn)(m)
+
+    print("\nhooks:")
+    sp = root / ".claude/settings.json"
+    if not sp.exists():
+        bad(".claude/settings.json missing")
+        fails += 1
+    else:
+        hooks = json.loads(sp.read_text(encoding="utf-8")).get("hooks", {})
+        for ev in ("Stop", "SessionEnd", "SessionStart"):
+            wired = any("checkpoint.sh" in h.get("command", "")
+                        for e in hooks.get(ev, []) for h in e.get("hooks", []))
+            (ok if wired else bad)(ev)
+            fails += not wired
+    cp = root / "agents/checkpoint.sh"
+    if cp.exists():
+        (ok if os.access(cp, os.X_OK) else bad)("checkpoint.sh executable")
+        fails += not os.access(cp, os.X_OK)
+
+    print("\ncore drift:")
+    for s, d in CORE.items():
+        src, dst = KIT / s, root / d
+        if not dst.exists():
+            bad(f"{d} missing")
+            fails += 1
+        elif dst.read_bytes() != src.read_bytes():
+            warn(f"{d} differs from kit — run `agentkit update` (local edits are lost)")
+        else:
+            ok(d)
+
+    print("\norca:")
+    if not have("orca"):
+        warn("orca not on PATH — supervised workers unavailable")
+    else:
+        try:
+            out = subprocess.run(["orca", "status"], capture_output=True, text=True, timeout=45).stdout
+            (ok if "runtimeReachable: true" in out else warn)("runtime reachable")
+        except Exception:
+            warn("orca status timed out")
+        for cli in sorted(clis):
+            if cli not in ("claude", "codex", "cursor"):
+                warn(f"--agent {cli} is not an Orca agent id; use "
+                     f"`terminal create --command \"{cli} ...\"` + `worker-start --terminal`")
+
+    print()
+    if fails:
+        print(f"{R}{fails} problem(s){D}")
+        sys.exit(1)
+    print(f"{G}healthy{D}")
+
+
+p = argparse.ArgumentParser(prog="agentkit")
+sub = p.add_subparsers(dest="cmd", required=True)
+i = sub.add_parser("init", help="scaffold the agent layer into the current directory")
+i.add_argument("--preset"); i.add_argument("--project")
+i.add_argument("--force", action="store_true", help="overwrite existing project files")
+i.set_defaults(fn=cmd_init)
+u = sub.add_parser("update", help="refresh core/ files only"); u.set_defaults(fn=cmd_update)
+d = sub.add_parser("doctor", help="verify the setup"); d.set_defaults(fn=cmd_doctor)
+a = p.parse_args()
+a.fn(a)
