@@ -11,13 +11,25 @@ Orca supervises them.
 
 ```bash
 cd my-project
-agentkit init                    # generic scaffold
-agentkit init --preset ros2-usv  # or start from a domain preset
-agentkit doctor                  # verify before trusting it
+agentkit init          # scaffold — works the same for web, mobile, backend, robotics
+agentkit doctor        # verify before trusting it
 ```
 
-Then fill the placeholders in `AGENTS.md` and `agents/orchestrator.md`. Those two
-files are the project's own knowledge; everything else arrives working.
+Then open the coordinator and let it bootstrap the project. `agents/bootstrap.md`
+has it read the repository — README, manifests, CI config, test layout, git
+history — fill `AGENTS.md` and `agents/orchestrator.md` from what it finds, prune
+the roles the project has no use for, ask only about what it could not read, and
+hand you the result for approval.
+
+That is why there are no per-domain presets to maintain. The project-specific
+half is derived from the project, not from a template somebody wrote in advance.
+`presets/` exists only to seed a repeat of an existing setup; the normal path
+does not use it.
+
+**The bootstrap has one hard rule: never invent an invariant.** A constraint that
+cannot be traced to a document, a config that enforces it, or the human saying so
+does not get written. An empty section is honest; a fabricated one reads as
+authoritative and nobody re-checks it.
 
 ## What lands in a project
 
@@ -27,6 +39,7 @@ CLAUDE.md                 read by claude — coordinator identity
 .claude/settings.json     project-level hooks; global settings untouched
 agents/
   core.md                 KIT-MANAGED — coordination machinery, do not edit
+  bootstrap.md            KIT-MANAGED — first-run procedure
   orchestrator.md         this project's coordinator facts
   roles.toml              which agent runs on which model — the only place
   <role>.md               role doctrine
@@ -56,8 +69,9 @@ intent, and how it is reverted with one boolean.
   are skipped unless `--force`
 - `update` — refresh kit-managed files only; project files are never touched
 - `doctor` — layout, `roles.toml` parse, profile existence, CLIs on PATH, model
-  ids checked against the live provider list, hooks wired, core drift, Orca
-  reachability, and which CLIs are not valid `--agent` ids
+  ids checked against the live provider list, remaining bootstrap placeholders,
+  hooks wired, core drift, Orca reachability, and which CLIs are not valid
+  `--agent` ids
 
 `doctor` encodes failures found the hard way. `--agent agy` is rejected by Orca,
 so agy workers need `terminal create --command` plus `worker-start --terminal`;

@@ -19,6 +19,14 @@ for what is specific to this project. In short:
 instead of hard-coding launch flags, and resolve the fallback blocks against the
 availability toggles before building any command.
 
+## First run
+
+If `AGENTS.md` or `agents/orchestrator.md` still contain `<!--` placeholders,
+this project has not been bootstrapped. Follow `agents/bootstrap.md` before doing
+any real work: it fills those files from the repository itself and hands you the
+result for approval. Never invent an invariant to fill a section — an empty
+section is honest, a fabricated one is not.
+
 ## Escalate only as far as the question requires
 
 | Layer | What | Cost |
