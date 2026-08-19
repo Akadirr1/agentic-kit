@@ -732,8 +732,11 @@ def cmd_doctor(args):
         except Exception:
             warn("orca status timed out")
         for cli in sorted(clis):
-            if cli not in ("claude", "codex", "cursor"):
-                warn(f"--agent {cli} is not an Orca agent id; use "
+            aid = LAUNCH.get(cli, {}).get("agent")
+            if aid and aid != cli:
+                ok(f"--agent {aid} (Orca's id for {cli})")
+            elif not aid:
+                warn(f"no Orca agent id known for {cli}; use "
                      f"`terminal create --command \"{cli} ...\"` + `worker-start --terminal`")
         for cli in sorted(clis):
             t = trusted(cli, root)
