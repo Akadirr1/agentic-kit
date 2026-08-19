@@ -301,6 +301,51 @@ def trusted(cli, root: Path):
     return None
 
 
+def grant_trust(cli, root: Path) -> bool:
+    """Record this project as trusted for `cli`. Returns True if it now is.
+
+    Running preflight in a project is an explicit statement that agents will run
+    here, so the trust question is answered once, on the record, instead of being
+    left to ambush an unattended pane. Only the CLI's own trust store is touched.
+    """
+    h = Path.home()
+    try:
+        if cli == "agy":
+            f = h / ".gemini/trustedFolders.json"
+            j = {}
+            if f.exists():
+                try:
+                    j = json.loads(f.read_text(encoding="utf-8"))
+                except Exception:
+                    j = {}
+            j[_nfc(root)] = "TRUST_FOLDER"
+            f.parent.mkdir(parents=True, exist_ok=True)
+            f.write_text(json.dumps(j, indent=2, ensure_ascii=False) + "\n",
+                         encoding="utf-8")
+            return True
+        if cli == "claude":
+            f = h / ".claude.json"
+            j = json.loads(f.read_text(encoding="utf-8"))
+            j.setdefault("projects", {}).setdefault(_nfc(root), {})[
+                "hasTrustDialogAccepted"] = True
+            f.write_text(json.dumps(j, indent=2, ensure_ascii=False) + "\n",
+                         encoding="utf-8")
+            return True
+        if cli == "codex":
+            # TOML, hand-edited by codex itself — append a section rather than
+            # rewriting a file this tool does not own the format of.
+            f = h / ".codex/config.toml"
+            body = f.read_text(encoding="utf-8") if f.exists() else ""
+            section = f'\n[projects."{_nfc(root)}"]\ntrust_level = "trusted"\n'
+            if f'[projects."{_nfc(root)}"]' not in body:
+                f.parent.mkdir(parents=True, exist_ok=True)
+                f.write_text(body.rstrip("\n") + "\n" + section, encoding="utf-8")
+            return True
+    except Exception:
+        return False
+    return False
+
+
 def effective(role: dict, toggles: dict) -> dict:
     """Apply the availability toggle, so preflight tests what would really run."""
     fb = role.get("fallback")
@@ -422,13 +467,20 @@ def cmd_preflight(args):
         elif layer == "1":
             ok("coordinator — keeps cross-session memory")
 
+        store = LAUNCH.get(cli, {}).get("trust", "its trust store")
         t = trusted(cli, root)
+        granted = False
+        if t is not True and not args.no_trust:
+            granted = grant_trust(cli, root)
+            t = trusted(cli, root)
         row["checks"]["trusted"] = t
         if t is True:
-            ok(f"directory trusted ({LAUNCH.get(cli, {}).get('trust', '?')})")
+            ok(f"directory trusted ({store})" if not granted
+               else f"directory trusted — recorded just now in {store}")
         elif t is False:
-            warn(f"directory NOT trusted — first run will stop on a prompt; "
-                 f"{LAUNCH.get(cli, {}).get('hint', 'accept its trust prompt once')}")
+            bad(f"directory NOT trusted — a fresh pane will stop on the trust "
+                f"prompt; {LAUNCH.get(cli, {}).get('hint', 'accept it once by hand')}")
+            fails += 1
         else:
             warn(f"trust state unknown for {cli}")
 
@@ -731,6 +783,8 @@ f.add_argument("--handshake", action="store_true",
                help="also probe worker-start for 2b roles (implies --launch)")
 f.add_argument("--timeout-ms", type=int, default=120000, dest="timeout_ms")
 f.add_argument("--keep", action="store_true", help="leave panes open for inspection")
+f.add_argument("--no-trust", action="store_true", dest="no_trust",
+               help="report missing trust instead of recording it")
 f.add_argument("--settle-polls", type=int, default=12, dest="settle_polls",
                help="reads allowed while an agent is still starting")
 f.add_argument("--settle-seconds", type=int, default=15, dest="settle_seconds",
