@@ -57,19 +57,34 @@ is invisible there, so that path is a fallback for when Orca is unreachable, and
 using it must be stated in the handoff. Idle notifications are part of that
 visibility: do not suppress them.
 
+**Orca's agent id is not the binary name.** `--agent` takes Orca's registered
+id, and rejecting an unknown one looks exactly like refusing to run that agent.
+`agy` is registered as `antigravity`; `--agent agy` fails on the name alone,
+while `--agent antigravity` is accepted and launches the same binary. Check the
+id before concluding an agent is unsupported. Orca may also refuse
+`--model`/`--effort` for a given agent — `antigravity` does, so that role's
+model comes from the CLI's own configuration and `roles.toml` cannot pin it.
+
 **A readiness failure is a symptom, not a diagnosis.** When `worker-start` fails
-at `agent_readiness`, exactly two things can be true, and they are
-indistinguishable from the outside:
+at `agent_readiness`, three different things produce the identical error:
 
-1. The agent launched fine but is **waiting on a prompt** — a first-run folder
-   trust dialog, a login, an approval — so it never reports readiness. This is
-   by far the common case and it is fixable.
-2. The CLI genuinely does not answer the handshake.
+1. Wrong agent id — the launch never happened.
+2. The agent launched but is **parked on a prompt**: a trust dialog, a login, an
+   approval. It is running and will never report ready.
+3. The CLI genuinely does not answer the handshake.
 
-Do not conclude (2) without reading the pane. `agentkit preflight --launch`
-opens each role's real command, waits for `tui-idle`, reads the pane back, and
-scans it for prompt text; `--handshake` then probes `worker-start` for 2b roles
-and cleans up after itself. It reports which of the two you have.
+Only reading the pane separates them. `agentkit preflight` names the Orca agent
+id and the trust state statically; `--launch` opens the role's real command,
+waits for `tui-idle` and reads the pane back; `--handshake` probes `worker-start`
+for 2b roles, re-reads the pane on failure, and cleans up the dispatch and task
+afterwards.
+
+Case 2 is the common one and it is not always fixable by trusting the folder.
+Measured 2026-08-19: agy answers `--print` correctly from a valid session while
+its TUI sits on "You are currently not signed in" indefinitely — so the
+non-interactive path works and the supervised path cannot start. When a CLI is
+in that state, its roles belong at Layer 2a until the CLI is fixed, not at 2b
+with a workaround.
 
 Prevent case (1) rather than diagnosing it repeatedly: every role's launch
 command carries its CLI's permission-bypass flag, and the project directory is
@@ -82,6 +97,28 @@ which is how this was first mistaken for a missing CLI feature.
 For a CLI that really is case (2), run it in a pane without supervision:
 `terminal split --command`, drive it with `terminal send`, read results from the
 pane, and close the loop with `task-update` yourself.
+
+## Starting a worker
+
+Prefer the composed start. `worker-start --agent <orca_id>` creates the terminal,
+handles readiness, and records the dispatch in one call:
+
+```bash
+orca orchestration worker-start --task <task_id> --worktree current \
+  --agent <orca_id> [--model <id> --effort <level>] --json
+```
+
+`--model` and `--effort` are accepted only for agents whose launch supports them,
+and never together with `--terminal`. Read the receipt: a failed or unknown start
+exits nonzero and reports `stage`, `effects`, and `residualResources` — inspect
+those rather than retrying blind. A start that reports `ok: false` can still have
+dispatched the task and created the pane; that is the `outcome_unknown` case, and
+it was reproduced here on 2026-08-19. Before retrying, check `task-list`,
+`worker-list`, and `terminal list`. Clean up by dispatch id — `worker-stop` and
+`worker-release` take `--dispatch`, and `task-update` takes `--id`.
+
+Build the pane yourself only when you need argv the composed start cannot
+express. Then the layout below applies.
 
 ## Pane layout
 

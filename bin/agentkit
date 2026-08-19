@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """agentkit — scaffold and verify a multi-agent coordination layer in a project."""
-import argparse, json, os, shutil, subprocess, sys, tomllib, unicodedata
+import argparse, json, os, re, shutil, subprocess, sys, tomllib, unicodedata
 from pathlib import Path
 
 KIT = Path(__file__).resolve().parent.parent
@@ -131,19 +131,30 @@ def agy_models():
 LAUNCH = {
     "claude": {"unblock": "--dangerously-skip-permissions",
                "trust": "~/.claude.json",
+               "agent": "claude", "launch_model": True,
                "hint": "start claude here once and accept the trust dialog"},
     "codex":  {"unblock": "--dangerously-bypass-approvals-and-sandbox",
                "trust": "~/.codex/config.toml",
+               "agent": "codex", "launch_model": True,
                "hint": "start codex here once and answer the trust prompt"},
+    # The binary is `agy`; Orca registers it as `antigravity`. `--agent agy` is
+    # rejected for the name, which is easy to misread as "Orca cannot run it".
+    # Orca also refuses --model/--effort for this agent
+    # ("Agent antigravity does not support launch-time model selection"), so the
+    # model comes from agy's own configuration, not from roles.toml.
     "agy":    {"unblock": "--dangerously-skip-permissions",
                "trust": "~/.gemini/trustedFolders.json",
+               "agent": "antigravity", "launch_model": False,
                "hint": "start agy here once and accept the folder-trust prompt"},
 }
 
 # Substrings that mean the TUI is waiting for a human rather than for work.
+# "not signed in" earns its place: agy 1.1.15 answers `--print` from a valid
+# session while its TUI sits on that line forever, which is exactly the state
+# that fails Orca's readiness probe.
 BLOCKERS = ("do you trust", "trust this", "trust folder", "[y/n]", "(y/n)",
-            "press enter to continue", "sign in", "log in", "authenticate",
-            "select an option", "choose an option", "grant access")
+            "press enter to continue", "not signed in", "sign in", "log in",
+            "authenticate", "select an option", "choose an option", "grant access")
 
 
 def _nfc(s):
@@ -289,11 +300,25 @@ def cmd_preflight(args):
         else:
             warn(f"trust state unknown for {cli}")
 
-        if cli in LAUNCH:
-            ok(f"unblock flag: {LAUNCH[cli]['unblock']}")
+        spec = LAUNCH.get(cli)
+        if spec:
+            ok(f"unblock flag: {spec['unblock']}")
+            aid = spec["agent"]
+            row["orca_agent"] = aid
+            if aid != cli:
+                ok(f"Orca agent id is '{aid}', not '{cli}'")
+            if not spec["launch_model"] and r.get("model"):
+                warn(f"Orca refuses --model for '{aid}'; roles.toml pins "
+                     f"{r['model']} but the launch cannot carry it — set the "
+                     f"default inside {cli} itself")
+                row["checks"]["model_pinnable"] = False
         else:
             warn(f"no launch spec for {cli} — add one to LAUNCH in bin/agentkit")
         print(f"       command: {row['command']}")
+        if spec:
+            print(f"       supervised: orca orchestration worker-start --task <id> "
+                  f"--worktree current --agent {spec['agent']}"
+                  + (f" --model {r['model']}" if spec["launch_model"] and r.get("model") else ""))
 
         if not live or not present:
             results.append(row)
@@ -352,14 +377,34 @@ def cmd_preflight(args):
                 fails += not good
                 row["checks"]["handshake"] = good
                 row["failedStage"] = stage
-                if not good and "readiness" in stage.lower() and not hit:
-                    warn("readiness failed while the pane was NOT blocked — "
-                         "this one is the CLI, not a prompt")
-                for cleanup in (("orchestration", "worker-stop", "--task", tid),
-                                ("orchestration", "worker-release", "--task", tid),
-                                ("orchestration", "task-update", "--task", tid,
-                                 "--status", "cancelled")):
-                    orca_json(*cleanup, timeout=60)
+                if not good and "readiness" in stage.lower():
+                    # Re-read: the pane may only have blocked after launch.
+                    late = orca_json("terminal", "read", "--terminal", handle)
+                    lp = json.dumps(late.get("result", ""), ensure_ascii=False).lower()
+                    lh = [b for b in BLOCKERS if b in lp]
+                    row["blockers"] = sorted(set(hit) | set(lh))
+                    if lh:
+                        warn(f"readiness failed because the pane is parked on: "
+                             f"{', '.join(lh)} — fix the prompt, not the wiring")
+                    else:
+                        warn("readiness failed with an unblocked pane — this one is "
+                             "the CLI, not a prompt")
+
+                # A failed start can still have dispatched the task, so find the
+                # dispatch before cleaning up and address it by dispatch id.
+                ds = orca_json("orchestration", "dispatch-show", "--task", tid, timeout=60)
+                did = None
+                for k in ("dispatch_id", "dispatchId", "id"):
+                    m = re.search(rf'"{k}"\s*:\s*"(dsp[^"]+|[0-9a-f-]{{8,}})"',
+                                  json.dumps(ds, ensure_ascii=False))
+                    if m:
+                        did = m.group(1)
+                        break
+                if did:
+                    orca_json("orchestration", "worker-stop", "--dispatch", did, timeout=60)
+                    orca_json("orchestration", "worker-release", "--dispatch", did, timeout=60)
+                orca_json("orchestration", "task-update", "--id", tid,
+                          "--status", "cancelled", timeout=60)
 
         if not args.keep:
             orca_json("terminal", "close", "--terminal", handle, timeout=60)
