@@ -385,25 +385,29 @@ def launch_cmd(r: dict, unblock=True, memoryless=False, oneshot=False) -> str:
     return prefix + " ".join(parts)
 
 
-def find_key(obj, names):
-    """First value under any of `names`, walking the decoded response.
+def find_id(obj, prefix, names=()):
+    """First Orca id with `prefix` anywhere in the decoded response.
 
-    Written after a regex version silently matched the wrong thing: every Orca
-    reply carries a top-level envelope `id`, so a pattern that fell back to `id`
-    returned the request id instead of a dispatch id, and the cleanup that
-    followed addressed a resource that did not exist. Orca ids are
-    `<prefix>_<12 hex>` (`task`, `run`, `ctx`, `msg`, `gate`, `wtr`, …) — there
-    is no `dsp` prefix, which is why the regex never matched a real one.
+    The prefix is the point. Orca mints ids as `<prefix>_<12 hex>` via
+    generateId() — run, task, ctx, msg, gate, delivery, relay, wtr — while every
+    reply also carries a UUID envelope `id` for the request itself. Matching by
+    key name alone picks up that envelope: it cost a broken dispatch cleanup
+    once, and then a Run that was never created because `{"run": null}` still had
+    an envelope id sitting beside it. Match the shape, not the label.
     """
+    want = re.compile(rf"^{prefix}_[0-9a-f]{{6,}}$")
     stack = [obj]
     while stack:
         cur = stack.pop()
         if isinstance(cur, dict):
-            for n in names:
+            for n in names:                      # preferred keys first
                 v = cur.get(n)
-                if isinstance(v, str) and v:
+                if isinstance(v, str) and want.match(v):
                     return v
-            stack.extend(cur.values())
+            for v in cur.values():
+                if isinstance(v, str) and want.match(v):
+                    return v
+                stack.append(v)
         elif isinstance(cur, list):
             stack.extend(cur)
     return None
@@ -449,6 +453,28 @@ def cmd_preflight(args):
     if live and not (orca_json("status", timeout=45) or {}).get("ok"):
         sys.exit(f"{R}stop{D}  Orca runtime unreachable — start the Orca app, then retry")
 
+    # Lifecycle authority belongs to the Orca terminal bound to the Run, and
+    # preflight is a plain subprocess. Measured 2026-08-19: worker-start answers
+    # "requires the coordinator terminal currently bound to the Task Run". The
+    # probe is therefore only available when preflight runs inside that
+    # terminal; detect it once and say so rather than failing every role.
+    skip_handshake = False
+    if args.handshake:
+        # Detect the constraint before creating anything. worker-start and
+        # task-update both require the Orca terminal bound to the Run, and a
+        # subprocess can never be it — measured 2026-08-19, after four probe
+        # Tasks were created that the same subprocess then could not cancel.
+        # A bound Run up front is the only cheap proof, and checking costs
+        # nothing: run-current mutates no state.
+        rc = orca_json("orchestration", "run-current", timeout=60)
+        run_id = find_id(rc, "run", ("run_id", "runId"))
+        coord = ((rc.get("result") or {}).get("run") or {}).get("coordinator_handle")
+        if not run_id or not coord:
+            skip_handshake = True
+            warn("handshake skipped: no Run is bound. Bind one with "
+                 "`orca orchestration run-create` from the coordinator terminal "
+                 "first — creating a Task here would leave one behind that this "
+                 "process has no authority to clear.")
     results, fails = [], 0
     for name in names:
         r = effective(roles[name], toggles)
@@ -589,26 +615,43 @@ def cmd_preflight(args):
         row["blockers"] = hit or starting
 
         # -- handshake: will Orca supervise it? ------------------------------
-        if args.handshake and layer.startswith("2b"):
+        if args.handshake and layer.startswith("2b") and not skip_handshake:
+            # --spec is the task text; --title/--body do not exist. Getting this
+            # wrong made the probe warn and pass instead of testing anything.
             task = orca_json("orchestration", "task-create",
-                             "--title", f"preflight {name}",
-                             "--body", "agentkit preflight probe — no work expected")
-            tid = ((task.get("result") or {}).get("task") or {}).get("id") \
-                or (task.get("result") or {}).get("id")
+                             "--spec", "agentkit preflight probe — no work expected",
+                             "--task-title", f"preflight {name}",
+                             "--run", run_id, "--from", coord)
+            tid = find_id(task, "task", ("task_id", "taskId"))
             if not tid:
-                warn(f"task-create failed, skipping handshake: "
-                     f"{(task.get('error') or {}).get('message', '')}")
+                bad(f"task-create failed, handshake not tested: "
+                    f"{(task.get('error') or {}).get('message', '')}")
+                fails += 1
             else:
                 ws = orca_json("orchestration", "worker-start", "--task", tid,
                                "--terminal", handle, "--worktree", "current",
-                               "--timeout-ms", str(args.timeout_ms),
+                               "--from", coord, "--timeout-ms", str(args.timeout_ms),
                                timeout=args.timeout_ms / 1000 + 60)
                 good = bool(ws.get("ok"))
                 err = ws.get("error") or {}
                 stage = err.get("failedStage") or err.get("stage") or ""
-                (ok if good else bad)("supervised worker-start"
-                                      + ("" if good else f" — failed at {stage or 'unknown stage'}"))
-                fails += not good
+                # Print the message, not just the stage. "failed at unknown
+                # stage" tells the operator nothing they can act on, and the
+                # stage field is often absent while the message is precise.
+                msg = err.get("message") or ""
+                if not good and "coordinator terminal" in msg:
+                    skip_handshake = True
+                    warn("handshake needs the Orca terminal bound to the Run; "
+                         "preflight is a subprocess, so this probe only works "
+                         "when run from inside the coordinator's own terminal")
+                    good = None  # environment limit, not a failing role
+                else:
+                    (ok if good else bad)(
+                        "supervised worker-start" if good else
+                        f"supervised worker-start failed"
+                        + (f" at {stage}" if stage else "")
+                        + (f" — {msg}" if msg else ""))
+                fails += good is False
                 row["checks"]["handshake"] = good
                 row["failedStage"] = stage
                 if not good and "readiness" in stage.lower():
@@ -627,7 +670,7 @@ def cmd_preflight(args):
                 # A failed start can still have dispatched the task, so find the
                 # dispatch before cleaning up and address it by dispatch id.
                 ds = orca_json("orchestration", "dispatch-show", "--task", tid, timeout=60)
-                did = find_key(ds, ("dispatch_id", "dispatchId"))
+                did = find_id(ds, "ctx", ("dispatch_id", "dispatchId", "id"))
                 if did:
                     # Release, not close: it preserves output first and touches
                     # only the terminal that dispatch owns.
@@ -638,8 +681,11 @@ def cmd_preflight(args):
                     warn("no dispatch id in dispatch-show — the probe task may "
                          "still hold a worker; check `worker-list` before retrying")
                     owned = False
+                # Valid statuses are pending/ready/dispatched/completed/failed/
+                # blocked — `cancelled` is rejected, which silently left probe
+                # Tasks sitting at `ready` until they were cleaned up by hand.
                 orca_json("orchestration", "task-update", "--id", tid,
-                          "--status", "cancelled", timeout=60)
+                          "--status", "failed", "--from", coord, timeout=60)
 
         if args.keep:
             warn(f"pane kept open: {handle}")
