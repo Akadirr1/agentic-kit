@@ -284,14 +284,16 @@ def trusted(cli, root: Path):
                         .get("projects", {}), root)
             return None if e is None else e.get("trust_level") == "trusted"
         if cli == "agy":
-            # agy trusts a folder and everything under it, so walk ancestors.
+            # Exact folder only. An ancestor entry looks like it should cover a
+            # subdirectory, but agy still asked for this project while
+            # /users/abdulkadir was already marked TRUST_FOLDER — and an
+            # unanswered trust prompt is what made this CLI look hung three
+            # times. Treat ancestor-only as "expect a prompt".
             j = json.loads((h / ".gemini/trustedFolders.json").read_text(encoding="utf-8"))
             want = _nfc(root).lower()
             marked = [_nfc(p).lower() for p, v in j.items()
                       if str(v).upper().startswith("TRUST")]
-            if any(want == p or want.startswith(p + "/") for p in marked):
-                return True
-            return None if not marked else False
+            return True if want in marked else False
     except FileNotFoundError:
         return None
     except Exception:
@@ -307,9 +309,22 @@ def effective(role: dict, toggles: dict) -> dict:
     return role
 
 
-def launch_cmd(r: dict, unblock=True, memoryless=False) -> str:
-    """Build the exact shell command a worker pane would run for this role."""
+def launch_cmd(r: dict, unblock=True, memoryless=False, oneshot=False) -> str:
+    """Build the exact shell command this role would run.
+
+    A 2a role is a single non-interactive call, so it gets the CLI's print mode
+    rather than its TUI flags — that is the whole point of the layer, and for agy
+    it is also the path its vendor delivers the agent by.
+    """
     cli, model, effort = r["cli"], r.get("model", ""), r.get("effort", "")
+    if oneshot:
+        one = {"agy": ["agy", "--print"],
+               "claude": ["claude", "--print"],
+               "codex": ["codex", "exec"]}.get(cli)
+        if one:
+            parts = list(one) + (["--model", model] if model else [])
+            pre = f"CLAUDE_CONFIG_DIR={WORKER_CONFIG} " if memoryless else ""
+            return pre + " ".join(parts)
     # Not claude-only: claude-mem installs into codex too, and its codex hook
     # resolves the plugin through the same CLAUDE_CONFIG_DIR. Harmless for CLIs
     # that ignore the variable, so every disposable worker carries it.
@@ -376,8 +391,11 @@ def cmd_preflight(args):
         cli, layer = r["cli"], str(r.get("layer", ""))
         # Layer 1 is the coordinator and keeps its memory; 2a/2b are disposable.
         memoryless = layer.startswith("2")
+        oneshot = layer == "2a"
         row = {"role": name, "cli": cli, "layer": layer, "memoryless": memoryless,
-               "command": launch_cmd(r, memoryless=memoryless), "checks": {}}
+               "oneshot": oneshot,
+               "command": launch_cmd(r, memoryless=memoryless, oneshot=oneshot),
+               "checks": {}}
         print(f"\n{name}  ({cli}, layer {layer})")
 
         # -- static ---------------------------------------------------------
