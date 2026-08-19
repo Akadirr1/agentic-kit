@@ -85,12 +85,19 @@ on a hook-trust prompt and agy had not finished signing in. Idle means the
 output stopped moving, which is exactly what a modal prompt and a stalled splash
 screen both look like. Always read the pane after the wait.
 
-**Distinguish a prompt from a slow start before declaring anything broken.** A
-trust or approval prompt never clears on its own; a startup banner does. agy
-prints "You are currently not signed in" with a spinner for minutes before its
-session resolves — polling it once at 60s said "hung", polling it to completion
-said "ready, Gemini 3.1 Pro (High)". Both readings came from the same agent on
-the same day. Re-poll a starting agent; only answer or fail a real prompt.
+**Read the whole pane, not its last lines.** A modal can sit above the tail while
+a spinner and a banner keep redrawing at the bottom, so a tail read shows motion
+and hides the question. agy was called hung three separate times on that basis:
+its log showed a backend call retrying every few minutes, which looked like a
+stalled service. It was a folder-trust prompt nobody had answered. The same
+binary opened in seconds in a plain terminal and inside Orca once a human
+answered it. Diagnose from the full buffer, and treat "the process is doing
+something" as no evidence at all that it is not waiting on a human.
+
+**A CLI whose interactive path needs an answer every start does not belong at
+2b.** Check how the vendor expects the agent to be driven before forcing a TUI:
+Orca's registry delivers agy by stdin with `--print`, and that path is instant,
+unattended, and takes `--input-format stream-json` for multi-step work.
 
 Known gates worth pre-clearing rather than diagnosing repeatedly: claude's
 directory trust dialog, codex's directory trust **and** a separate hook-trust

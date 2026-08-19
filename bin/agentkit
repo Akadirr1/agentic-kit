@@ -237,7 +237,7 @@ def ensure_worker_config(root: Path):
 BLOCKERS = ("do you trust", "trust this", "trust folder", "[y/n]", "(y/n)",
             "press enter to continue", "hooks need review",
             "trust all and continue", "select an option", "choose an option",
-            "grant access", "sign in to continue",
+            "grant access", "sign in to continue", "trust the files",
             # a fresh config runs the onboarding wizard in a pane nobody watches
             "choose the text style", "let's get started", "paste code here",
             # codex stops on its own version prompt
@@ -463,7 +463,10 @@ def cmd_preflight(args):
         # agent time to finish rather than calling it broken on the first look.
         hit, starting = [], []
         for attempt in range(args.settle_polls):
-            rd = orca_json("terminal", "read", "--terminal", handle)
+            # Whole buffer, not the tail: a modal can sit above a redrawing
+            # spinner, so a short read shows motion and hides the question.
+            rd = orca_json("terminal", "read", "--terminal", handle,
+                           "--limit", "400")
             pane = json.dumps(rd.get("result", ""), ensure_ascii=False).lower()
             hit = [b for b in BLOCKERS if b in pane]
             starting = [s for s in STARTING if s in pane]
