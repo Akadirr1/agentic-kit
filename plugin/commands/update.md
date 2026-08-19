@@ -1,11 +1,11 @@
 ---
-allowed-tools: Bash(agentkit update:*), Bash(agentkit doctor:*), Bash(git diff:*), Bash(git status:*), Read, Edit
+allowed-tools: Bash, Read, Edit
 description: Refresh the kit-managed files in this project and report what changed
 ---
 
 ## Context
 
-- Update: !`agentkit update 2>&1`
+- Update: !`AK="${CLAUDE_PLUGIN_ROOT:-}/scripts/agentkit"; [ -x "$AK" ] || AK="$(command -v agentkit || echo agentkit)"; "$AK" update 2>&1`
 - Working tree: !`git status --short 2>/dev/null | head -20`
 
 ## Your task

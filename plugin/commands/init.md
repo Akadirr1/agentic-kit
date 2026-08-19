@@ -1,5 +1,5 @@
 ---
-allowed-tools: Bash(agentkit init:*), Bash(agentkit doctor:*), Bash(git:*), Read, Write, Edit, Glob, Grep
+allowed-tools: Bash, Read, Write, Edit, Glob, Grep
 description: Scaffold the agentkit coordination layer here, then fill it from this repository
 argument-hint: "[--project NAME] [--force]"
 ---
@@ -13,7 +13,9 @@ argument-hint: "[--project NAME] [--force]"
 
 Scaffold the layer, then finish it from the repository itself.
 
-**Step 1 — scaffold.** Run `agentkit init $ARGUMENTS`. Existing files are skipped
+**Step 1 — scaffold.** Run the CLI shipped with this plugin:
+`"$CLAUDE_PLUGIN_ROOT/scripts/agentkit" init $ARGUMENTS` — or plain
+`agentkit init $ARGUMENTS` if you cloned the repository and put it on PATH. Existing files are skipped
 unless `--force`, so this is safe to run in a project that already has some of it.
 
 **Step 2 — read the repository, do not interview the human.** Open the README,

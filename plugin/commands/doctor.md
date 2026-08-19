@@ -1,11 +1,11 @@
 ---
-allowed-tools: Bash(agentkit doctor:*), Bash(git status:*), Read, Edit
+allowed-tools: Bash, Read, Edit
 description: Verify the agentkit layout, roles, CLIs, hooks, and knowledge stores
 ---
 
 ## Context
 
-- Health check: !`agentkit doctor 2>&1 | tail -70`
+- Health check: !`AK="${CLAUDE_PLUGIN_ROOT:-}/scripts/agentkit"; [ -x "$AK" ] || AK="$(command -v agentkit || echo agentkit)"; "$AK" doctor 2>&1 | tail -70`
 
 ## Your task
 

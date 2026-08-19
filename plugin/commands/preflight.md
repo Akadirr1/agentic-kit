@@ -1,12 +1,12 @@
 ---
-allowed-tools: Bash(agentkit preflight:*), Bash(orca terminal:*), Bash(orca status:*), Read, Edit
+allowed-tools: Bash, Read, Edit
 description: Prove every role in roles.toml actually launches unblocked
 argument-hint: "[--role NAME] [--launch] [--handshake]"
 ---
 
 ## Context
 
-- Static check: !`agentkit preflight $ARGUMENTS 2>&1 | tail -60`
+- Static check: !`AK="${CLAUDE_PLUGIN_ROOT:-}/scripts/agentkit"; [ -x "$AK" ] || AK="$(command -v agentkit || echo agentkit)"; "$AK" preflight $ARGUMENTS 2>&1 | tail -60`
 
 ## Your task
 
