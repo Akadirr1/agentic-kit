@@ -44,10 +44,25 @@ static site is noise; a `safety` role on anything that moves, spends money, or
 deletes data is not. Adjust models per role to match how hard each job actually
 is here — the cheap tier exists to be used.
 
-**5. Ask for what is left.** Collect the gaps into one short list of concrete
+**5. Stand up the knowledge stores.** Both stores in `core.md` §Knowledge
+stores are expected in every project:
+
+- **Graph:** check `graphify` is on PATH, then build the initial graph with
+  `graphify update . --code-only` (Layer 0, no model cost) and confirm
+  `graphify-out/graph.json` exists. If the CLI is missing, tell the human what
+  to install rather than skipping the store silently.
+- **Vault:** locate the project's Obsidian vault or, with the human's consent,
+  create one with a draft/inbox folder for worker reports. Record its path in
+  `agents/orchestrator.md` under "where truth lives". Wire `agents/vault_scan.py`
+  as the link validator.
+- **Context diet:** list the MCP servers enabled for this project and propose
+  disabling the unused ones in `.claude/settings.json` (see `core.md`
+  §Context hygiene) — this is the single largest per-turn cost lever.
+
+**6. Ask for what is left.** Collect the gaps into one short list of concrete
 questions. Do not ask what you could have read. Do not ask in a drip.
 
-**6. Propose, do not commit.** Present the filled `AGENTS.md`, the filled
+**7. Propose, do not commit.** Present the filled `AGENTS.md`, the filled
 `agents/orchestrator.md`, and the role changes as a diff for approval. These
 files govern every future session; the human signs them off.
 

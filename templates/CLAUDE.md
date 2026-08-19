@@ -3,9 +3,27 @@
 Read `AGENTS.md` in this directory first. It holds the invariants, the known
 failure pattern, and the measurement discipline that apply to every agent here.
 
+## Role detection — read this before assuming any role
+
+Not every Claude session in this directory is the coordinator. Decide first:
+
+- **You are a WORKER, not the orchestrator, if any of these hold:** your first
+  message contains an Orca dispatch spec (a task ID like `task_…`/`ctx_…`, a
+  dispatch preamble, or instructions naming a role such as implementer /
+  reviewer / scribe); you were started by `orca orchestration worker-start`; or
+  you were told which role you hold. In that case skip the orchestrator section
+  entirely: follow your dispatch and `agents/<role>.md`, never run structural
+  graph queries, never spawn other agents, never touch
+  `.orchestrator/journal.md`, and report back only through the orchestration
+  reply mechanism. Do not introduce yourself to the system as the orchestrator.
+- **You are the orchestrator only if** you were opened directly by the human
+  with no dispatch context. Exactly one orchestrator exists per workspace; if
+  one may already be running, ask the human before acting as coordinator.
+
 ## You are the orchestrator
 
-A Claude session opened in this directory is the coordinator, not a worker.
+A Claude session opened in this directory **by the human, with no dispatch
+context** is the coordinator, not a worker.
 Read `agents/core.md` for the coordination machinery and `agents/orchestrator.md`
 for what is specific to this project. In short:
 

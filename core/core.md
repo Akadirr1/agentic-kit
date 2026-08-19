@@ -51,6 +51,18 @@ filesystem conflict makes sharing unsafe — and state that conflict first.
 Account for every settled worker: reuse it, retain it at the human's request, or
 release it. Released workers stay readable.
 
+**Every worker opens as an Orca pane — Claude workers included.** The human
+supervises through the agent window; a worker spawned as an in-session subagent
+is invisible there, so that path is a fallback for when Orca is unreachable, and
+using it must be stated in the handoff. Idle notifications are part of that
+visibility: do not suppress them.
+
+Some CLIs never answer the supervised-worker handshake (`worker-start` fails at
+`agent_readiness` no matter how the terminal was created — seen with agy 1.1.14).
+`agentkit doctor` flags them. Run those agents in a pane without supervision:
+`terminal split --command`, drive them with `terminal send`, read results from
+the pane, and close the loop with `task-update` yourself.
+
 ## Pane layout
 
 Workers stack down the right-hand side, so the coordinator stays on the left and
@@ -109,10 +121,58 @@ desired outcome, safety class, exact repository and base ref, worktree path,
 allowed and forbidden paths, constraints, acceptance criteria, required
 evidence, and rollback. Never assume a worker has seen this conversation.
 
+**Long output goes to a file, not through messages.** A report streamed through
+orchestration messages lands in the coordinator's context verbatim and gets
+re-read on every subsequent turn — one 15K-token report delivered in six
+messages cost roughly a million tokens of re-reads before it reached durable
+storage. The dispatch spec must name a report path (the vault's draft area if
+the project has one, `agents/reports/<task_id>.md` otherwise); the worker writes
+there and sends only the path plus a summary of at most ten lines. The
+coordinator verifies the report where it lies — spot-checking claims against the
+graph and the diff — and never copies its body into the conversation.
+
 For a review dispatch, build the evidence pack: the diff and exact base ref,
 `graphify explain` for every changed node, `graphify path` from each changed node
 to the project's critical nodes, the invariant boundaries that apply, and any
 measurements already taken.
+
+## Knowledge stores: the vault and the graph
+
+Projects under this kit keep two stores beside git, and the coordinator is
+their gatekeeper.
+
+- **The vault (Obsidian)** records decisions, rationale, and field findings —
+  what code cannot say. Canonical notes change only behind a human gate.
+  Workers never edit canonical notes; they write into the vault's draft area
+  (or `agents/reports/`) and the coordinator promotes content through the gate.
+  Validate wikilinks with `agents/vault_scan.py`, never with grep or a pasted
+  snippet — regex pasted through a shell heredoc has been corrupted in transit
+  and produced 34 false positives.
+- **The code graph (graphify)** answers structure questions. The coordinator
+  holds the query monopoly: workers receive a prepared, scoped subgraph and do
+  not grep the repository for structure. Blast radius comes from `graphify
+  path`, not from asking a model what a change might affect. After code changes
+  run `graphify update . --code-only` — AST-only, no model cost, Layer 0.
+
+Cross-checking a worker's report against the graph is cheap and catches the
+expensive class of error: a claimed dependency the graph does not show, or a
+missed one it does.
+
+## Context hygiene
+
+The dominant token cost of a long coordinator session is not the work — it is
+the fixed per-turn overhead re-read on every turn: MCP tool listings, skill
+listings, global instruction files. Budget it once at project setup:
+
+- Disable MCP servers the project does not use in `.claude/settings.json`;
+  every enabled server's tool listing is a tax on all turns of every session.
+- Keep the machine-wide instruction file (`~/.claude/CLAUDE.md`) near-empty;
+  anything project-specific belongs in the project files.
+- Prefer few large tool calls over many small ones — each call re-reads the
+  whole context. Batch independent shell commands.
+- Answering a settled worker's idle notification costs a full-context turn;
+  keep the notifications (they are the human's visibility), but do not reply
+  unless the message needs an action.
 
 ## Separation of duties
 
