@@ -141,6 +141,15 @@ orca orchestration worker-start --task <task_id> --terminal <handle> --json
 In Orca's naming `vertical` means side by side and `horizontal` means stacked;
 the handle comes back at `result.split.handle`.
 
+**Orca's own CLI guide states the opposite** ("`--direction horizontal` splits
+left/right, `--direction vertical` splits top/bottom"). The guide is wrong.
+Measured on Orca 1.4.185 by building the layout and reading it back with
+`terminal list --include-visual-layouts`: splitting the coordinator with
+`vertical` produced a side-by-side `pane-split`, and splitting that worker with
+`horizontal` stacked the next one under it. Trust this paragraph over the guide,
+and re-measure the same way before changing it — reading the guide alone has
+already produced one proposal to invert these commands.
+
 Binding with `--terminal` means `worker-start` will not accept `--model` or
 `--effort`, so put the model in the split command itself — for example
 `codex -c model="gpt-5.6-sol" -c model_reasoning_effort="xhigh"` or
