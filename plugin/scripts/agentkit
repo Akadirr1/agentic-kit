@@ -546,6 +546,11 @@ def cmd_preflight(args):
             results.append(row)
             continue
         row["terminal"] = handle
+        # Bound here, not inside the handshake branch: three paths reach the
+        # cleanup without ever entering it (--launch alone, a non-2b role, a
+        # failed task-create) and an unbound name would crash *after* the pane
+        # exists, leaving the orphan this whole block is meant to prevent.
+        owned = False
 
         w = orca_json("terminal", "wait", "--terminal", handle,
                       "--for", "tui-idle", "--timeout-ms", str(args.timeout_ms),
