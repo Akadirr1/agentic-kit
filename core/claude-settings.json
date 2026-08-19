@@ -5,7 +5,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "\"/Users/abdulkadir/Library/CloudStorage/OneDrive-Kişisel/jetson-raspi/agents/checkpoint.sh\" save",
+            "command": "bash agents/checkpoint.sh save",
             "timeout": 10
           }
         ]
@@ -16,7 +16,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "\"/Users/abdulkadir/Library/CloudStorage/OneDrive-Kişisel/jetson-raspi/agents/checkpoint.sh\" close",
+            "command": "bash agents/checkpoint.sh close",
             "timeout": 10
           }
         ]
@@ -27,7 +27,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "\"/Users/abdulkadir/Library/CloudStorage/OneDrive-Kişisel/jetson-raspi/agents/checkpoint.sh\" resume",
+            "command": "bash agents/checkpoint.sh resume",
             "timeout": 10
           }
         ]

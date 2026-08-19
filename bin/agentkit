@@ -18,9 +18,13 @@ warn = lambda m: print(f"  {Y}warn{D} {m}")
 
 
 def settings_json(root: Path) -> dict:
-    sh = root / "agents" / "checkpoint.sh"
+    # Relative path + explicit bash: survives OS moves (macOS<->Windows via
+    # OneDrive) and works whether the hook runner is sh or cmd.exe, as long as
+    # claude is started from the project root. An absolute path broke on the
+    # first machine change (2026-08-18).
     mk = lambda mode: [{"hooks": [{"type": "command",
-                                   "command": f'"{sh}" {mode}', "timeout": 10}]}]
+                                   "command": f"bash agents/checkpoint.sh {mode}",
+                                   "timeout": 10}]}]
     return {"hooks": {"Stop": mk("save"), "SessionEnd": mk("close"),
                       "SessionStart": mk("resume")}}
 
