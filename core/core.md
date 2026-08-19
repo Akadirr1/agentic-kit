@@ -264,9 +264,14 @@ Projects under this kit keep two stores beside git, and the coordinator is
 their gatekeeper.
 
 - **The vault (Obsidian)** records decisions, rationale, and field findings —
-  what code cannot say. Canonical notes change only behind a human gate.
-  Workers never edit canonical notes; they write into the vault's draft area
-  (or `agents/reports/`) and the coordinator promotes content through the gate.
+  what code cannot say. `scribe` is its only writer and writes canonical notes
+  directly: an approval step that makes the coordinator carry every draft in
+  context to relay it costs more than it protects. The gate is evidence, not a
+  person — accepted scope, an independent verification report, an observed
+  commit, and a fetch run this session — plus a fixed scope limit `scribe` may
+  not cross: invariant boundaries, risk acceptance, safety thresholds, policy,
+  and branch policy stay with the human. Those go to the draft area named in the
+  report. Every other agent writes only to the draft area or `agents/reports/`.
   Validate wikilinks with `agents/vault_scan.py`, never with grep or a pasted
   snippet — regex pasted through a shell heredoc has been corrupted in transit
   and produced 34 false positives.
@@ -303,7 +308,8 @@ listings, global instruction files. Budget it once at project setup:
 - The implementer never runs the final review gate.
 - `reviewer`, `safety`, and `test-verifier` inspect the resulting diff and
   evidence independently.
-- `scribe` updates accepted project state last, behind a human gate.
+- `scribe` updates accepted project state last, gated on evidence and its scope
+  limit rather than on a human approving each delta.
 
 If agents disagree, preserve both claims, identify the evidence each used, and
 request a discriminating measurement. Never settle technical disagreement by
