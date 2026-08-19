@@ -72,6 +72,13 @@ intent, and how it is reverted with one boolean.
   ids checked against the live provider list, remaining bootstrap placeholders,
   hooks wired, core drift, Orca reachability, and which CLIs are not valid
   `--agent` ids
+- `preflight [--role NAME] [--launch] [--handshake] [--json]` — prove every role
+  actually starts. Static by default: CLI present, profile present, the exact
+  launch command including its permission-bypass flag, and whether this
+  directory is trusted for that CLI. `--launch` opens each role's real command
+  in an Orca pane, waits for `tui-idle`, reads the pane back and fails if it is
+  sitting on a trust, login, or approval prompt. `--handshake` additionally
+  probes `worker-start` for 2b roles and cleans up the task, worker, and pane.
 
 `doctor` encodes failures found the hard way. `--agent agy` is rejected by Orca,
 so agy workers need `terminal create --command` plus `worker-start --terminal`;

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """agentkit — scaffold and verify a multi-agent coordination layer in a project."""
-import argparse, json, os, shutil, subprocess, sys, tomllib
+import argparse, json, os, shutil, subprocess, sys, tomllib, unicodedata
 from pathlib import Path
 
 KIT = Path(__file__).resolve().parent.parent
@@ -118,6 +118,266 @@ def agy_models():
         return set()
 
 
+# --------------------------------------------------------------- launch specs
+# How each CLI is started so it reaches an input-accepting TUI instead of
+# stopping at a prompt, and where it records that a directory is trusted.
+#
+# This table exists because of a misdiagnosis. A worker that sits on a
+# first-run trust dialog never answers Orca's readiness probe, and
+# `worker-start` reports the same `agent_readiness` failure it would report for
+# a CLI that cannot be supervised at all. The two look identical from the
+# outside; only reading the pane tells them apart. `agentkit preflight` reads
+# the pane.
+LAUNCH = {
+    "claude": {"unblock": "--dangerously-skip-permissions",
+               "trust": "~/.claude.json",
+               "hint": "start claude here once and accept the trust dialog"},
+    "codex":  {"unblock": "--dangerously-bypass-approvals-and-sandbox",
+               "trust": "~/.codex/config.toml",
+               "hint": "start codex here once and answer the trust prompt"},
+    "agy":    {"unblock": "--dangerously-skip-permissions",
+               "trust": "~/.gemini/trustedFolders.json",
+               "hint": "start agy here once and accept the folder-trust prompt"},
+}
+
+# Substrings that mean the TUI is waiting for a human rather than for work.
+BLOCKERS = ("do you trust", "trust this", "trust folder", "[y/n]", "(y/n)",
+            "press enter to continue", "sign in", "log in", "authenticate",
+            "select an option", "choose an option", "grant access")
+
+
+def _nfc(s):
+    # macOS hands back NFD paths while these config files store NFC, so a plain
+    # string compare reports "not trusted" for any path with a non-ASCII
+    # character — "OneDrive-Kişisel" was the case that caught this. Same failure
+    # mode the vault scanner documents; normalise both sides before comparing.
+    return unicodedata.normalize("NFC", str(s)).rstrip("/")
+
+
+def _lookup(mapping, root):
+    """Exact-then-normalised lookup. None means no record at all."""
+    want = _nfc(root)
+    for k, v in mapping.items():
+        if _nfc(k) == want:
+            return v
+    return None
+
+
+def trusted(cli, root: Path):
+    """True / False / None(no record or unreadable) — is `root` trusted for `cli`?"""
+    h = Path.home()
+    try:
+        if cli == "claude":
+            e = _lookup(json.loads((h / ".claude.json").read_text(encoding="utf-8"))
+                        .get("projects", {}), root)
+            return None if e is None else bool(e.get("hasTrustDialogAccepted"))
+        if cli == "codex":
+            e = _lookup(tomllib.load(open(h / ".codex/config.toml", "rb"))
+                        .get("projects", {}), root)
+            return None if e is None else e.get("trust_level") == "trusted"
+        if cli == "agy":
+            # agy trusts a folder and everything under it, so walk ancestors.
+            j = json.loads((h / ".gemini/trustedFolders.json").read_text(encoding="utf-8"))
+            want = _nfc(root).lower()
+            marked = [_nfc(p).lower() for p, v in j.items()
+                      if str(v).upper().startswith("TRUST")]
+            if any(want == p or want.startswith(p + "/") for p in marked):
+                return True
+            return None if not marked else False
+    except FileNotFoundError:
+        return None
+    except Exception:
+        return None
+    return None
+
+
+def effective(role: dict, toggles: dict) -> dict:
+    """Apply the availability toggle, so preflight tests what would really run."""
+    fb = role.get("fallback")
+    if fb and toggles.get(f"{role['cli']}_available", True) is False:
+        return {**role, **fb}
+    return role
+
+
+def launch_cmd(r: dict, unblock=True) -> str:
+    """Build the exact shell command a worker pane would run for this role."""
+    cli, model, effort = r["cli"], r.get("model", ""), r.get("effort", "")
+    if cli == "codex":
+        parts = ["codex"] + ([f'-c model="{model}"'] if model else [])
+        if effort:
+            parts.append(f'-c model_reasoning_effort="{effort}"')
+    elif cli == "claude":
+        # effort travels in CLAUDE_EFFORT, not on the command line
+        parts = ["claude"] + (["--model", model] if model else [])
+    else:
+        parts = [cli] + (["--model", model] if model else [])
+        if effort:
+            parts += ["--effort", effort]
+    if unblock and cli in LAUNCH:
+        parts.append(LAUNCH[cli]["unblock"])
+    return " ".join(parts)
+
+
+def orca_json(*args, timeout=180):
+    """One orca call -> its last JSON object. Responses are NDJSON or pretty
+    printed depending on the command, so decode object by object."""
+    try:
+        p = subprocess.run(["orca", *args, "--json"], capture_output=True,
+                           text=True, timeout=timeout)
+    except Exception as e:
+        return {"ok": False, "error": {"message": str(e)}}
+    dec, i, txt, last = json.JSONDecoder(), 0, p.stdout, None
+    while i < len(txt):
+        while i < len(txt) and txt[i] in " \t\r\n":
+            i += 1
+        if i >= len(txt):
+            break
+        try:
+            obj, i = dec.raw_decode(txt, i)
+        except ValueError:
+            break
+        last = obj
+    return last or {"ok": False,
+                    "error": {"message": (p.stderr or p.stdout or "no output").strip()[:300]}}
+
+
+def cmd_preflight(args):
+    root = Path.cwd()
+    rp = root / "agents/roles.toml"
+    if not rp.exists():
+        sys.exit(f"{R}stop{D}  no agents/roles.toml — run `agentkit init` first")
+    cfg = tomllib.load(open(rp, "rb"))
+    toggles, roles = cfg.get("settings", {}), cfg.get("roles", {})
+    if args.role and args.role not in roles:
+        sys.exit(f"{R}stop{D}  no such role: {args.role}")
+    names = [args.role] if args.role else sorted(roles)
+
+    live = args.launch or args.handshake
+    if live and not have("orca"):
+        sys.exit(f"{R}stop{D}  orca not on PATH — drop --launch/--handshake for static checks")
+    if live and not (orca_json("status", timeout=45) or {}).get("ok"):
+        sys.exit(f"{R}stop{D}  Orca runtime unreachable — start the Orca app, then retry")
+
+    results, fails = [], 0
+    for name in names:
+        r = effective(roles[name], toggles)
+        cli, layer = r["cli"], str(r.get("layer", ""))
+        row = {"role": name, "cli": cli, "layer": layer,
+               "command": launch_cmd(r), "checks": {}}
+        print(f"\n{name}  ({cli}, layer {layer})")
+
+        # -- static ---------------------------------------------------------
+        present = have(cli)
+        (ok if present else bad)(f"{cli} on PATH")
+        fails += not present
+        row["checks"]["path"] = present
+
+        prof = roles[name].get("profile")
+        if prof:
+            e = (root / "agents" / prof).exists()
+            (ok if e else bad)(f"profile agents/{prof}")
+            fails += not e
+            row["checks"]["profile"] = e
+
+        t = trusted(cli, root)
+        row["checks"]["trusted"] = t
+        if t is True:
+            ok(f"directory trusted ({LAUNCH.get(cli, {}).get('trust', '?')})")
+        elif t is False:
+            warn(f"directory NOT trusted — first run will stop on a prompt; "
+                 f"{LAUNCH.get(cli, {}).get('hint', 'accept its trust prompt once')}")
+        else:
+            warn(f"trust state unknown for {cli}")
+
+        if cli in LAUNCH:
+            ok(f"unblock flag: {LAUNCH[cli]['unblock']}")
+        else:
+            warn(f"no launch spec for {cli} — add one to LAUNCH in bin/agentkit")
+        print(f"       command: {row['command']}")
+
+        if not live or not present:
+            results.append(row)
+            continue
+
+        # -- launch: does it actually reach an idle, unblocked TUI? ----------
+        c = orca_json("terminal", "create", "--worktree", "active",
+                      "--command", row["command"], "--title", f"preflight:{name}")
+        handle = ((c.get("result") or {}).get("terminal") or {}).get("handle") \
+            or (c.get("result") or {}).get("handle")
+        if not c.get("ok") or not handle:
+            bad(f"terminal create failed: {(c.get('error') or {}).get('message', c)}")
+            fails += 1
+            row["checks"]["launch"] = False
+            results.append(row)
+            continue
+        row["terminal"] = handle
+
+        w = orca_json("terminal", "wait", "--terminal", handle,
+                      "--for", "tui-idle", "--timeout-ms", str(args.timeout_ms),
+                      timeout=args.timeout_ms / 1000 + 60)
+        idle = bool(w.get("ok"))
+        (ok if idle else bad)(f"reaches tui-idle within {args.timeout_ms} ms")
+        fails += not idle
+        row["checks"]["idle"] = idle
+
+        rd = orca_json("terminal", "read", "--terminal", handle)
+        pane = json.dumps(rd.get("result", ""), ensure_ascii=False).lower()
+        hit = [b for b in BLOCKERS if b in pane]
+        (ok if not hit else bad)("pane is not waiting on a prompt"
+                                 if not hit else f"pane BLOCKED on: {', '.join(hit)}")
+        fails += bool(hit)
+        row["checks"]["unblocked"] = not hit
+        row["blockers"] = hit
+
+        # -- handshake: will Orca supervise it? ------------------------------
+        if args.handshake and layer.startswith("2b"):
+            task = orca_json("orchestration", "task-create",
+                             "--title", f"preflight {name}",
+                             "--body", "agentkit preflight probe — no work expected")
+            tid = ((task.get("result") or {}).get("task") or {}).get("id") \
+                or (task.get("result") or {}).get("id")
+            if not tid:
+                warn(f"task-create failed, skipping handshake: "
+                     f"{(task.get('error') or {}).get('message', '')}")
+            else:
+                ws = orca_json("orchestration", "worker-start", "--task", tid,
+                               "--terminal", handle, "--worktree", "current",
+                               "--timeout-ms", str(args.timeout_ms),
+                               timeout=args.timeout_ms / 1000 + 60)
+                good = bool(ws.get("ok"))
+                err = ws.get("error") or {}
+                stage = err.get("failedStage") or err.get("stage") or ""
+                (ok if good else bad)("supervised worker-start"
+                                      + ("" if good else f" — failed at {stage or 'unknown stage'}"))
+                fails += not good
+                row["checks"]["handshake"] = good
+                row["failedStage"] = stage
+                if not good and "readiness" in stage.lower() and not hit:
+                    warn("readiness failed while the pane was NOT blocked — "
+                         "this one is the CLI, not a prompt")
+                for cleanup in (("orchestration", "worker-stop", "--task", tid),
+                                ("orchestration", "worker-release", "--task", tid),
+                                ("orchestration", "task-update", "--task", tid,
+                                 "--status", "cancelled")):
+                    orca_json(*cleanup, timeout=60)
+
+        if not args.keep:
+            orca_json("terminal", "close", "--terminal", handle, timeout=60)
+        else:
+            warn(f"pane kept open: {handle}")
+        results.append(row)
+
+    if args.json:
+        print("\n" + json.dumps({"root": str(root), "roles": results}, indent=2,
+                                ensure_ascii=False))
+    print()
+    if fails:
+        print(f"{R}{fails} problem(s){D}")
+        sys.exit(1)
+    print(f"{G}all roles launchable{D}"
+          + ("" if live else "  (static only — add --launch to actually open panes)"))
+
+
 def cmd_doctor(args):
     root = Path.cwd()
     fails = 0
@@ -227,10 +487,16 @@ def cmd_doctor(args):
             if cli not in ("claude", "codex", "cursor"):
                 warn(f"--agent {cli} is not an Orca agent id; use "
                      f"`terminal create --command \"{cli} ...\"` + `worker-start --terminal`")
-            if cli == "agy":
-                warn("agy (<=1.1.14) also fails worker-start at agent_readiness even "
-                     "terminal-bound — run it unsupervised in a pane via `terminal send` "
-                     "and close the task with `task-update` (measured 2026-08-18)")
+        for cli in sorted(clis):
+            t = trusted(cli, root)
+            if t is False:
+                bad(f"{cli}: this directory is not trusted — a fresh pane will stop on "
+                    f"the trust prompt and never answer readiness. "
+                    f"{LAUNCH.get(cli, {}).get('hint', '')}")
+                fails += 1
+            elif t is None:
+                warn(f"{cli}: trust state unknown")
+        warn("run `agentkit preflight --launch` to prove each role opens unblocked")
 
     print("\nknowledge stores:")
     (ok if have("graphify") else warn)(
@@ -261,5 +527,15 @@ i.add_argument("--force", action="store_true", help="overwrite existing project 
 i.set_defaults(fn=cmd_init)
 u = sub.add_parser("update", help="refresh core/ files only"); u.set_defaults(fn=cmd_update)
 d = sub.add_parser("doctor", help="verify the setup"); d.set_defaults(fn=cmd_doctor)
+f = sub.add_parser("preflight", help="verify every role actually launches unblocked")
+f.add_argument("--role", help="check one role instead of all")
+f.add_argument("--launch", action="store_true",
+               help="open a real Orca pane per role and read it back")
+f.add_argument("--handshake", action="store_true",
+               help="also probe worker-start for 2b roles (implies --launch)")
+f.add_argument("--timeout-ms", type=int, default=120000, dest="timeout_ms")
+f.add_argument("--keep", action="store_true", help="leave panes open for inspection")
+f.add_argument("--json", action="store_true", help="emit the result matrix as JSON")
+f.set_defaults(fn=cmd_preflight)
 a = p.parse_args()
 a.fn(a)

@@ -57,11 +57,31 @@ is invisible there, so that path is a fallback for when Orca is unreachable, and
 using it must be stated in the handoff. Idle notifications are part of that
 visibility: do not suppress them.
 
-Some CLIs never answer the supervised-worker handshake (`worker-start` fails at
-`agent_readiness` no matter how the terminal was created — seen with agy 1.1.14).
-`agentkit doctor` flags them. Run those agents in a pane without supervision:
-`terminal split --command`, drive them with `terminal send`, read results from
-the pane, and close the loop with `task-update` yourself.
+**A readiness failure is a symptom, not a diagnosis.** When `worker-start` fails
+at `agent_readiness`, exactly two things can be true, and they are
+indistinguishable from the outside:
+
+1. The agent launched fine but is **waiting on a prompt** — a first-run folder
+   trust dialog, a login, an approval — so it never reports readiness. This is
+   by far the common case and it is fixable.
+2. The CLI genuinely does not answer the handshake.
+
+Do not conclude (2) without reading the pane. `agentkit preflight --launch`
+opens each role's real command, waits for `tui-idle`, reads the pane back, and
+scans it for prompt text; `--handshake` then probes `worker-start` for 2b roles
+and cleans up after itself. It reports which of the two you have.
+
+Prevent case (1) rather than diagnosing it repeatedly: every role's launch
+command carries its CLI's permission-bypass flag, and the project directory is
+trusted before the first dispatch. `agentkit preflight` checks the trust record
+for each CLI (`~/.claude.json`, `~/.codex/config.toml`,
+`~/.gemini/trustedFolders.json`) and names the file when the record is missing.
+Trust is per machine — a workspace synced to a second OS starts untrusted there,
+which is how this was first mistaken for a missing CLI feature.
+
+For a CLI that really is case (2), run it in a pane without supervision:
+`terminal split --command`, drive it with `terminal send`, read results from the
+pane, and close the loop with `task-update` yourself.
 
 ## Pane layout
 
