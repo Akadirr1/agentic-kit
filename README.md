@@ -7,13 +7,32 @@ health check.
 It assumes agents run as CLIs (`claude`, `codex`, `agy`, …) and, optionally, that
 Orca supervises them.
 
+## Install
+
+As a Claude Code plugin — commands, role subagents, the launch guide, and
+checkpoint hooks, with the pieces you do not want switched off:
+
+```
+/plugin marketplace add https://github.com/Akadirr1/agentic-kit
+/plugin install agentkit@agentic-kit
+/plugin configure agentkit@agentic-kit
+```
+
+Or as a plain CLI, by putting `bin/agentkit` on your PATH. Both run the same
+file: `bin/agentkit` is a symlink into the plugin, so the CLI and the plugin can
+never drift apart.
+
 ## Use
 
 ```bash
 cd my-project
 agentkit init          # scaffold — works the same for web, mobile, backend, robotics
-agentkit doctor        # verify before trusting it
+agentkit preflight     # prove every role actually launches before trusting it
+agentkit doctor        # verify layout, roles, hooks, and knowledge stores
 ```
+
+The same three are available as `/agentkit:init`, `/agentkit:preflight`, and
+`/agentkit:doctor`.
 
 Then open the coordinator and let it bootstrap the project. `agents/bootstrap.md`
 has it read the repository — README, manifests, CI config, test layout, git
@@ -48,7 +67,31 @@ agents/
 ```
 
 Kit-managed files are overwritten by `agentkit update`. Edit them here, not
-there.
+there. `update` covers `core/` only — a role profile that needs new doctrine is
+a deliberate edit, not something the refresh silently applies.
+
+## What the repository holds
+
+```
+.claude-plugin/marketplace.json   this repo as a one-plugin marketplace
+plugin/                           the plugin, and the kit itself
+  .claude-plugin/plugin.json      the toggles in `/plugin configure`
+  scripts/agentkit                the CLI
+  core/                           kit-managed doctrine and scripts
+  profiles/  templates/  presets/ what `init` copies into a project
+  skills/                         agentkit, agentkit-launch
+  commands/                       init, update, doctor, preflight
+  agents/                         read-only roles as real subagents
+  hooks/hooks.json                checkpoint wiring, skipped if the project has it
+bin/agentkit                      symlink into plugin/scripts
+```
+
+The role profiles ship twice on purpose. In `profiles/` they are the dispatch
+briefs a supervised Orca worker is given; in `agents/` they are Claude subagents
+for the one-shot path. Same doctrine, two delivery mechanisms, and `roles.toml`
+decides which by layer. `implementer` is deliberately absent from `agents/` —
+work that edits a repository belongs in a supervised pane where a human can
+watch it.
 
 ## Two ideas worth keeping
 

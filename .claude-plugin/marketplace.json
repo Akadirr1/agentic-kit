@@ -1,0 +1,20 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "agentic-kit",
+  "owner": {
+    "name": "Abdülkadir"
+  },
+  "metadata": {
+    "description": "A reusable coordination layer for multi-agent engineering work"
+  },
+  "plugins": [
+    {
+      "name": "agentkit",
+      "version": "0.1.0",
+      "source": "./plugin",
+      "category": "workflow",
+      "description": "One coordinator, role profiles with per-role model pinning, deterministic zero-token checkpoints, launch preflight, and memory that stays with the coordinator instead of following every disposable worker.",
+      "homepage": "https://github.com/Akadirr1/agentic-kit"
+    }
+  ]
+}

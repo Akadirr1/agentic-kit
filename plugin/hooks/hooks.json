@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "[ -f agents/checkpoint.sh ] || exit 0; grep -q checkpoint.sh .claude/settings.json 2>/dev/null && exit 0; bash agents/checkpoint.sh resume",
+            "timeout": 10
+          }
+        ],
+        "description": "agentkit checkpoint: restore mechanical state. Skipped when the project wires checkpoint.sh itself, so it never fires twice."
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "[ -f agents/checkpoint.sh ] || exit 0; grep -q checkpoint.sh .claude/settings.json 2>/dev/null && exit 0; bash agents/checkpoint.sh save",
+            "timeout": 10
+          }
+        ],
+        "description": "agentkit checkpoint: append branch, commit, dirty count, open tasks. No model runs."
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "[ -f agents/checkpoint.sh ] || exit 0; grep -q checkpoint.sh .claude/settings.json 2>/dev/null && exit 0; bash agents/checkpoint.sh close",
+            "timeout": 10
+          }
+        ],
+        "description": "agentkit checkpoint: close the session record. Sessions do not end politely, so this is a floor, not the primary save."
+      }
+    ]
+  }
+}

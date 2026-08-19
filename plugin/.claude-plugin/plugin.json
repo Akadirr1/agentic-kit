@@ -1,0 +1,81 @@
+{
+  "name": "agentkit",
+  "version": "0.1.0",
+  "description": "A coordination layer for multi-agent work: one coordinator, role profiles with per-role model pinning, deterministic zero-token checkpoints, launch preflight, and memory that stays with the coordinator instead of following every disposable worker.",
+  "author": {
+    "name": "Abdülkadir"
+  },
+  "repository": "https://github.com/Akadirr1/agentic-kit",
+  "license": "MIT",
+  "keywords": [
+    "orchestration",
+    "multi-agent",
+    "orca",
+    "coordinator",
+    "worker",
+    "codex",
+    "antigravity",
+    "obsidian",
+    "graphify"
+  ],
+  "userConfig": {
+    "orca_supervision": {
+      "type": "boolean",
+      "default": true,
+      "title": "Supervised Orca workers",
+      "description": "Run 2b work as supervised Orca workers so a human can watch and steer each one. Turn this off to fall back to in-session subagents, which are invisible in the agent window and must be declared in the handoff."
+    },
+    "memory_isolation": {
+      "type": "boolean",
+      "default": true,
+      "title": "Keep memory with the coordinator",
+      "description": "Launch disposable workers against a plugin-free config directory so a cross-session memory store records the coordinator's work and not every throwaway probe."
+    },
+    "auto_trust": {
+      "type": "boolean",
+      "default": true,
+      "title": "Record folder trust automatically",
+      "description": "Answer each CLI's folder-trust question once, on the record, when preflight runs in a project. Without it an unattended pane stops on the prompt and looks hung."
+    },
+    "permission_tier": {
+      "type": "string",
+      "default": "auto",
+      "title": "Worker permission tier",
+      "description": "auto = permissive but answerable (--permission-mode auto, -a on-request, --mode accept-edits). strict = leave every check in place and expect prompts."
+    },
+    "graph_integration": {
+      "type": "boolean",
+      "default": true,
+      "title": "graphify code graph",
+      "description": "Route structure questions to graphify and attach a scoped subgraph to each dispatch. The coordinator holds the query monopoly; workers never grep for structure."
+    },
+    "vault_integration": {
+      "type": "boolean",
+      "default": false,
+      "title": "Obsidian vault",
+      "description": "Enable the vault as the store of accepted decisions, with scribe as its only writer, an evidence gate in place of human approval, and the wikilink scanner as its check."
+    },
+    "vault_path": {
+      "type": "string",
+      "default": "",
+      "title": "Vault path",
+      "description": "Leave empty to discover the directory containing .obsidian under the project root."
+    },
+    "checkpoint_hooks": {
+      "type": "boolean",
+      "default": true,
+      "title": "Automatic checkpoints",
+      "description": "Write mechanical state to .orchestrator/journal.md on Stop, SessionEnd, and SessionStart. Runs without a model, so a session that dies abruptly costs one unit of work rather than the whole session."
+    },
+    "council_enabled": {
+      "type": "boolean",
+      "default": false,
+      "title": "Council protocol",
+      "description": "Two vendors cross-reading one evidence pack. Runs only when a human asks; never on the coordinator's own initiative."
+    }
+  },
+  "mcpServers": {},
+  "skills": ["./skills/"],
+  "commands": ["./commands/"],
+  "agents": ["./agents/"]
+}
