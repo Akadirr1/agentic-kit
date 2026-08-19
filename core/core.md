@@ -79,12 +79,23 @@ waits for `tui-idle` and reads the pane back; `--handshake` probes `worker-start
 for 2b roles, re-reads the pane on failure, and cleans up the dispatch and task
 afterwards.
 
-Case 2 is the common one and it is not always fixable by trusting the folder.
-Measured 2026-08-19: agy answers `--print` correctly from a valid session while
-its TUI sits on "You are currently not signed in" indefinitely — so the
-non-interactive path works and the supervised path cannot start. When a CLI is
-in that state, its roles belong at Layer 2a until the CLI is fixed, not at 2b
-with a workaround.
+**`terminal wait --for tui-idle` returning ok is not readiness.** Measured
+2026-08-19: it returned ok for all three agents at once while codex was parked
+on a hook-trust prompt and agy had not finished signing in. Idle means the
+output stopped moving, which is exactly what a modal prompt and a stalled splash
+screen both look like. Always read the pane after the wait.
+
+**Distinguish a prompt from a slow start before declaring anything broken.** A
+trust or approval prompt never clears on its own; a startup banner does. agy
+prints "You are currently not signed in" with a spinner for minutes before its
+session resolves — polling it once at 60s said "hung", polling it to completion
+said "ready, Gemini 3.1 Pro (High)". Both readings came from the same agent on
+the same day. Re-poll a starting agent; only answer or fail a real prompt.
+
+Known gates worth pre-clearing rather than diagnosing repeatedly: claude's
+directory trust dialog, codex's directory trust **and** a separate hook-trust
+prompt that returns whenever a hook changes, and agy's folder trust. Each has a
+flag in `agentkit preflight`'s launch table.
 
 Prevent case (1) rather than diagnosing it repeatedly: every role's launch
 command carries its CLI's permission-bypass flag, and the project directory is

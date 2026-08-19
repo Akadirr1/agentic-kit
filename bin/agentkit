@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """agentkit — scaffold and verify a multi-agent coordination layer in a project."""
-import argparse, json, os, re, shutil, subprocess, sys, tomllib, unicodedata
+import argparse, json, os, re, shutil, subprocess, sys, time, tomllib, unicodedata
 from pathlib import Path
 
 KIT = Path(__file__).resolve().parent.parent
@@ -133,7 +133,11 @@ LAUNCH = {
                "trust": "~/.claude.json",
                "agent": "claude", "launch_model": True,
                "hint": "start claude here once and accept the trust dialog"},
-    "codex":  {"unblock": "--dangerously-bypass-approvals-and-sandbox",
+    # codex gates twice: the folder trust prompt, and a separate hook-trust
+    # prompt ("N hooks are new or changed") that reappears whenever a hook
+    # changes. For read-only work prefer `-s read-only -a never` over the
+    # blanket bypass; add --dangerously-bypass-hook-trust to clear the second.
+    "codex":  {"unblock": "-s read-only -a never --dangerously-bypass-hook-trust",
                "trust": "~/.codex/config.toml",
                "agent": "codex", "launch_model": True,
                "hint": "start codex here once and answer the trust prompt"},
@@ -148,13 +152,22 @@ LAUNCH = {
                "hint": "start agy here once and accept the folder-trust prompt"},
 }
 
-# Substrings that mean the TUI is waiting for a human rather than for work.
-# "not signed in" earns its place: agy 1.1.15 answers `--print` from a valid
-# session while its TUI sits on that line forever, which is exactly the state
-# that fails Orca's readiness probe.
+# Substrings that mean the TUI is waiting for a human. These do not clear on
+# their own; something has to answer them.
 BLOCKERS = ("do you trust", "trust this", "trust folder", "[y/n]", "(y/n)",
-            "press enter to continue", "not signed in", "sign in", "log in",
-            "authenticate", "select an option", "choose an option", "grant access")
+            "press enter to continue", "hooks need review",
+            "trust all and continue", "select an option", "choose an option",
+            "grant access", "sign in to continue")
+
+# Substrings that only mean "still starting". agy prints "not signed in" for
+# minutes before the session resolves and the prompt appears; failing on the
+# first read called a working agent broken. Re-poll these instead of failing.
+STARTING = ("not signed in", "signing in", "loading", "starting", "connecting")
+
+# `terminal wait --for tui-idle` returning ok is NOT proof of readiness.
+# Measured 2026-08-19: it returned ok for all three agents while codex sat on a
+# hook-trust prompt and agy was still signing in. Always read the pane after.
+IDLE_IS_NOT_READY = True
 
 
 def _nfc(s):
@@ -345,14 +358,30 @@ def cmd_preflight(args):
         fails += not idle
         row["checks"]["idle"] = idle
 
-        rd = orca_json("terminal", "read", "--terminal", handle)
-        pane = json.dumps(rd.get("result", ""), ensure_ascii=False).lower()
-        hit = [b for b in BLOCKERS if b in pane]
-        (ok if not hit else bad)("pane is not waiting on a prompt"
-                                 if not hit else f"pane BLOCKED on: {', '.join(hit)}")
-        fails += bool(hit)
-        row["checks"]["unblocked"] = not hit
-        row["blockers"] = hit
+        # tui-idle is not readiness, so read the pane — and give a still-starting
+        # agent time to finish rather than calling it broken on the first look.
+        hit, starting = [], []
+        for attempt in range(args.settle_polls):
+            rd = orca_json("terminal", "read", "--terminal", handle)
+            pane = json.dumps(rd.get("result", ""), ensure_ascii=False).lower()
+            hit = [b for b in BLOCKERS if b in pane]
+            starting = [s for s in STARTING if s in pane]
+            if hit or not starting:
+                break
+            if attempt == 0:
+                warn(f"still starting ({', '.join(starting)}) — polling "
+                     f"{args.settle_polls - 1} more times")
+            time.sleep(args.settle_seconds)
+        if hit:
+            bad(f"pane BLOCKED on: {', '.join(hit)}")
+        elif starting:
+            bad(f"never finished starting ({', '.join(starting)}) after "
+                f"{args.settle_polls * args.settle_seconds}s")
+        else:
+            ok("pane reached an input-accepting state")
+        fails += bool(hit or starting)
+        row["checks"]["unblocked"] = not (hit or starting)
+        row["blockers"] = hit or starting
 
         # -- handshake: will Orca supervise it? ------------------------------
         if args.handshake and layer.startswith("2b"):
@@ -580,6 +609,10 @@ f.add_argument("--handshake", action="store_true",
                help="also probe worker-start for 2b roles (implies --launch)")
 f.add_argument("--timeout-ms", type=int, default=120000, dest="timeout_ms")
 f.add_argument("--keep", action="store_true", help="leave panes open for inspection")
+f.add_argument("--settle-polls", type=int, default=12, dest="settle_polls",
+               help="reads allowed while an agent is still starting")
+f.add_argument("--settle-seconds", type=int, default=15, dest="settle_seconds",
+               help="seconds between those reads")
 f.add_argument("--json", action="store_true", help="emit the result matrix as JSON")
 f.set_defaults(fn=cmd_preflight)
 a = p.parse_args()
