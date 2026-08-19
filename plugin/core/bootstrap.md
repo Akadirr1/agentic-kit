@@ -48,7 +48,7 @@ is here — the cheap tier exists to be used.
 stores are expected in every project:
 
 - **Graph:** check `graphify` is on PATH, then build the initial graph with
-  `graphify update . --code-only` (Layer 0, no model cost) and confirm
+  `graphify update .` (Layer 0, no model cost) and confirm
   `graphify-out/graph.json` exists. If the CLI is missing, tell the human what
   to install rather than skipping the store silently.
 - **Vault:** locate the project's Obsidian vault or, with the human's consent,

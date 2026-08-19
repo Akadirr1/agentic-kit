@@ -246,13 +246,8 @@ BLOCKERS = ("do you trust", "trust this", "trust folder", "[y/n]", "(y/n)",
 # Substrings that only mean "still starting". agy prints "not signed in" for
 # minutes before the session resolves and the prompt appears; failing on the
 # first read called a working agent broken. Re-poll these instead of failing.
-STARTING = ("not signed in", "signing in", "loading", "starting", "connecting")
-
-# `terminal wait --for tui-idle` returning ok is NOT proof of readiness.
-# Measured 2026-08-19: it returned ok for all three agents while codex sat on a
-# hook-trust prompt and agy was still signing in. Always read the pane after.
-IDLE_IS_NOT_READY = True
-
+STARTING = ("not signed in", "signing in", "authenticating\u2026",
+            "welcome to", "initializing")
 
 def _nfc(s):
     # macOS hands back NFD paths while these config files store NFC, so a plain
@@ -390,6 +385,30 @@ def launch_cmd(r: dict, unblock=True, memoryless=False, oneshot=False) -> str:
     return prefix + " ".join(parts)
 
 
+def find_key(obj, names):
+    """First value under any of `names`, walking the decoded response.
+
+    Written after a regex version silently matched the wrong thing: every Orca
+    reply carries a top-level envelope `id`, so a pattern that fell back to `id`
+    returned the request id instead of a dispatch id, and the cleanup that
+    followed addressed a resource that did not exist. Orca ids are
+    `<prefix>_<12 hex>` (`task`, `run`, `ctx`, `msg`, `gate`, `wtr`, …) — there
+    is no `dsp` prefix, which is why the regex never matched a real one.
+    """
+    stack = [obj]
+    while stack:
+        cur = stack.pop()
+        if isinstance(cur, dict):
+            for n in names:
+                v = cur.get(n)
+                if isinstance(v, str) and v:
+                    return v
+            stack.extend(cur.values())
+        elif isinstance(cur, list):
+            stack.extend(cur)
+    return None
+
+
 def orca_json(*args, timeout=180):
     """One orca call -> its last JSON object. Responses are NDJSON or pretty
     printed depending on the command, so decode object by object."""
@@ -435,7 +454,7 @@ def cmd_preflight(args):
         r = effective(roles[name], toggles)
         cli, layer = r["cli"], str(r.get("layer", ""))
         # Layer 1 is the coordinator and keeps its memory; 2a/2b are disposable.
-        memoryless = layer.startswith("2")
+        memoryless = layer.startswith("2") or layer == "3"
         oneshot = layer == "2a"
         row = {"role": name, "cli": cli, "layer": layer, "memoryless": memoryless,
                "oneshot": oneshot,
@@ -456,7 +475,7 @@ def cmd_preflight(args):
             fails += not e
             row["checks"]["profile"] = e
 
-        if memoryless and cli == "claude":
+        if memoryless and cli in ("claude", "codex"):
             wc, wok = ensure_worker_config(root)
             (ok if wok else bad)(
                 f"memory-free config: {wc}" if wok
@@ -504,7 +523,14 @@ def cmd_preflight(args):
                   f"--worktree current --agent {spec['agent']}"
                   + (f" --model {r['model']}" if spec["launch_model"] and r.get("model") else ""))
 
-        if not live or not present:
+        if oneshot and live:
+            # A 2a command is print mode: it runs, answers, and exits. Opening it
+            # in a pane and waiting for tui-idle tests nothing — there is no TUI
+            # to become idle, and every 2a role would fail the stage it cannot
+            # reach. The gates --launch exists to catch all live on the TUI path.
+            ok("one-shot role — no TUI to open, pane stage skipped")
+            row["checks"]["launch"] = "skipped-oneshot"
+        if not live or not present or oneshot:
             results.append(row)
             continue
 
@@ -596,23 +622,26 @@ def cmd_preflight(args):
                 # A failed start can still have dispatched the task, so find the
                 # dispatch before cleaning up and address it by dispatch id.
                 ds = orca_json("orchestration", "dispatch-show", "--task", tid, timeout=60)
-                did = None
-                for k in ("dispatch_id", "dispatchId", "id"):
-                    m = re.search(rf'"{k}"\s*:\s*"(dsp[^"]+|[0-9a-f-]{{8,}})"',
-                                  json.dumps(ds, ensure_ascii=False))
-                    if m:
-                        did = m.group(1)
-                        break
+                did = find_key(ds, ("dispatch_id", "dispatchId"))
                 if did:
+                    # Release, not close: it preserves output first and touches
+                    # only the terminal that dispatch owns.
                     orca_json("orchestration", "worker-stop", "--dispatch", did, timeout=60)
                     orca_json("orchestration", "worker-release", "--dispatch", did, timeout=60)
+                    owned = True
+                else:
+                    warn("no dispatch id in dispatch-show — the probe task may "
+                         "still hold a worker; check `worker-list` before retrying")
+                    owned = False
                 orca_json("orchestration", "task-update", "--id", tid,
                           "--status", "cancelled", timeout=60)
 
-        if not args.keep:
-            orca_json("terminal", "close", "--terminal", handle, timeout=60)
-        else:
+        if args.keep:
             warn(f"pane kept open: {handle}")
+        elif owned:
+            pass  # worker-release already closed the terminal it owned
+        else:
+            orca_json("terminal", "close", "--terminal", handle, timeout=60)
         results.append(row)
 
     if args.json:
@@ -756,7 +785,7 @@ def cmd_doctor(args):
     gj = root / "graphify-out" / "graph.json"
     (ok if gj.exists() else warn)(
         "graphify-out/graph.json" if gj.exists()
-        else "no graph yet — run `graphify update . --code-only` (Layer 0)")
+        else "no graph yet — run `graphify update .` (Layer 0)")
     vault = next((Path(dp) for dp, dns, _ in os.walk(root)
                   if ".obsidian" in dns and ".git" not in dp), None)
     (ok if vault else warn)(

@@ -286,7 +286,7 @@ their gatekeeper.
   holds the query monopoly: workers receive a prepared, scoped subgraph and do
   not grep the repository for structure. Blast radius comes from `graphify
   path`, not from asking a model what a change might affect. After code changes
-  run `graphify update . --code-only` — AST-only, no model cost, Layer 0.
+  run `graphify update .` — AST-only, no model cost, Layer 0.
 
 Cross-checking a worker's report against the graph is cheap and catches the
 expensive class of error: a claimed dependency the graph does not show, or a

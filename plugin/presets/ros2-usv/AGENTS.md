@@ -30,7 +30,7 @@ Decided. Do not reopen.
    branch's build.
 5. **Foxglove is a test tool only.** `enable_foxglove:=false` in competition.
 6. **`zed_msgs` will not be installed on the Pi.**
-7. **graphify runs without a model** (`--code-only`). Do not run document
+7. **graphify runs without a model.** `graphify update .` is AST-only; Do not run document
    extraction; the vault is better organised already.
 
 ## The recurring failure
