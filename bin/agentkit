@@ -10,6 +10,7 @@ CORE = {
     "core/checkpoint.sh":        "agents/checkpoint.sh",
     "core/orchestrator.sh":      "agents/orchestrator.sh",
     "core/bootstrap.md":         "agents/bootstrap.md",
+    "core/vault_scan.py":        "agents/vault_scan.py",
 }
 G, R, Y, D = "\033[32m", "\033[31m", "\033[33m", "\033[0m"
 ok = lambda m: print(f"  {G}ok{D}   {m}")
@@ -226,6 +227,24 @@ def cmd_doctor(args):
             if cli not in ("claude", "codex", "cursor"):
                 warn(f"--agent {cli} is not an Orca agent id; use "
                      f"`terminal create --command \"{cli} ...\"` + `worker-start --terminal`")
+            if cli == "agy":
+                warn("agy (<=1.1.14) also fails worker-start at agent_readiness even "
+                     "terminal-bound — run it unsupervised in a pane via `terminal send` "
+                     "and close the task with `task-update` (measured 2026-08-18)")
+
+    print("\nknowledge stores:")
+    (ok if have("graphify") else warn)(
+        "graphify on PATH" if have("graphify")
+        else "graphify not on PATH — structural queries unavailable")
+    gj = root / "graphify-out" / "graph.json"
+    (ok if gj.exists() else warn)(
+        "graphify-out/graph.json" if gj.exists()
+        else "no graph yet — run `graphify update . --code-only` (Layer 0)")
+    vault = next((Path(dp) for dp, dns, _ in os.walk(root)
+                  if ".obsidian" in dns and ".git" not in dp), None)
+    (ok if vault else warn)(
+        f"vault: {vault.relative_to(root)}" if vault
+        else "no Obsidian vault found — see core.md §Knowledge stores")
 
     print()
     if fails:
