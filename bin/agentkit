@@ -129,15 +129,17 @@ def agy_models():
 # outside; only reading the pane tells them apart. `agentkit preflight` reads
 # the pane.
 LAUNCH = {
-    "claude": {"unblock": "--dangerously-skip-permissions",
+    # `auto` is the working default, not `bypassPermissions`. Bypass removes the
+    # check rather than answering it, which is the wrong trade for an agent that
+    # edits a safety-relevant repository. When auto does stop to ask, preflight's
+    # pane read reports it as a blocker instead of it silently hanging.
+    "claude": {"unblock": "--permission-mode auto",
                "trust": "~/.claude.json",
                "agent": "claude", "launch_model": True,
                "hint": "start claude here once and accept the trust dialog"},
     # codex gates twice: the folder trust prompt, and a separate hook-trust
-    # prompt ("N hooks are new or changed") that reappears whenever a hook
-    # changes. For read-only work prefer `-s read-only -a never` over the
-    # blanket bypass; add --dangerously-bypass-hook-trust to clear the second.
-    "codex":  {"unblock": "-s read-only -a never --dangerously-bypass-hook-trust",
+    # prompt ("N hooks are new or changed") that returns whenever a hook changes.
+    "codex":  {"unblock": "-a on-request --dangerously-bypass-hook-trust",
                "trust": "~/.codex/config.toml",
                "agent": "codex", "launch_model": True,
                "hint": "start codex here once and answer the trust prompt"},
@@ -146,11 +148,64 @@ LAUNCH = {
     # Orca also refuses --model/--effort for this agent
     # ("Agent antigravity does not support launch-time model selection"), so the
     # model comes from agy's own configuration, not from roles.toml.
-    "agy":    {"unblock": "--dangerously-skip-permissions",
+    "agy":    {"unblock": "--mode accept-edits",
                "trust": "~/.gemini/trustedFolders.json",
                "agent": "antigravity", "launch_model": False,
                "hint": "start agy here once and accept the folder-trust prompt"},
 }
+
+# Workers are disposable; the coordinator is not. Only the coordinator should
+# leave a trace in a cross-session memory store, or a throwaway probe becomes
+# indistinguishable from an accepted decision three months later. Measured
+# 2026-08-19: a smoke-test prompt was persisted under the project's own name
+# while the real coordinator session was filed under the home directory's name.
+#
+# Claude Code loads plugins from CLAUDE_CONFIG_DIR, so pointing a worker at a
+# config directory with no plugins keeps memory hooks out of that session.
+# Credentials live in that same directory, so the real ones are linked in —
+# without the link the worker starts unauthenticated. Verified by running the
+# same prompt both ways: the default config added a memory session, the worker
+# config added none.
+WORKER_CONFIG = Path.home() / ".agentkit" / "worker-config"
+
+
+def ensure_worker_config(root: Path):
+    """Create the memory-free config directory for workers. Returns (path, ok).
+
+    Trust is recorded per config directory, so the project must be trusted here
+    too or every worker stops on the trust dialog in a directory the human never
+    sees. The coordinator has already accepted it under the default config.
+    """
+    src = Path.home() / ".claude" / ".credentials.json"
+    try:
+        WORKER_CONFIG.mkdir(parents=True, exist_ok=True)
+        settings = WORKER_CONFIG / "settings.json"
+        if not settings.exists():
+            settings.write_text('{"enabledPlugins": {}}\n', encoding="utf-8")
+
+        cj = WORKER_CONFIG / ".claude.json"
+        data = {}
+        if cj.exists():
+            try:
+                data = json.loads(cj.read_text(encoding="utf-8"))
+            except Exception:
+                data = {}
+        projects = data.setdefault("projects", {})
+        key = _nfc(root)
+        if not projects.get(key, {}).get("hasTrustDialogAccepted"):
+            projects.setdefault(key, {})["hasTrustDialogAccepted"] = True
+            cj.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n",
+                          encoding="utf-8")
+
+        link = WORKER_CONFIG / ".credentials.json"
+        if not src.exists():
+            return WORKER_CONFIG, False
+        if not link.is_symlink() or link.resolve() != src.resolve():
+            link.unlink(missing_ok=True)
+            link.symlink_to(src)
+        return WORKER_CONFIG, True
+    except Exception:
+        return WORKER_CONFIG, False
 
 # Substrings that mean the TUI is waiting for a human. These do not clear on
 # their own; something has to answer them.
@@ -223,9 +278,10 @@ def effective(role: dict, toggles: dict) -> dict:
     return role
 
 
-def launch_cmd(r: dict, unblock=True) -> str:
+def launch_cmd(r: dict, unblock=True, memoryless=False) -> str:
     """Build the exact shell command a worker pane would run for this role."""
     cli, model, effort = r["cli"], r.get("model", ""), r.get("effort", "")
+    prefix = f"CLAUDE_CONFIG_DIR={WORKER_CONFIG} " if (memoryless and cli == "claude") else ""
     if cli == "codex":
         parts = ["codex"] + ([f'-c model="{model}"'] if model else [])
         if effort:
@@ -239,7 +295,7 @@ def launch_cmd(r: dict, unblock=True) -> str:
             parts += ["--effort", effort]
     if unblock and cli in LAUNCH:
         parts.append(LAUNCH[cli]["unblock"])
-    return " ".join(parts)
+    return prefix + " ".join(parts)
 
 
 def orca_json(*args, timeout=180):
@@ -286,8 +342,10 @@ def cmd_preflight(args):
     for name in names:
         r = effective(roles[name], toggles)
         cli, layer = r["cli"], str(r.get("layer", ""))
-        row = {"role": name, "cli": cli, "layer": layer,
-               "command": launch_cmd(r), "checks": {}}
+        # Layer 1 is the coordinator and keeps its memory; 2a/2b are disposable.
+        memoryless = layer.startswith("2")
+        row = {"role": name, "cli": cli, "layer": layer, "memoryless": memoryless,
+               "command": launch_cmd(r, memoryless=memoryless), "checks": {}}
         print(f"\n{name}  ({cli}, layer {layer})")
 
         # -- static ---------------------------------------------------------
@@ -302,6 +360,17 @@ def cmd_preflight(args):
             (ok if e else bad)(f"profile agents/{prof}")
             fails += not e
             row["checks"]["profile"] = e
+
+        if memoryless and cli == "claude":
+            wc, wok = ensure_worker_config(root)
+            (ok if wok else bad)(
+                f"memory-free config: {wc}" if wok
+                else f"worker config unusable — {wc} has no linked credentials; "
+                     f"the worker would start unauthenticated")
+            fails += not wok
+            row["checks"]["memoryless"] = wok
+        elif layer == "1":
+            ok("coordinator — keeps cross-session memory")
 
         t = trusted(cli, root)
         row["checks"]["trusted"] = t

@@ -131,6 +131,16 @@ it was reproduced here on 2026-08-19. Before retrying, check `task-list`,
 Build the pane yourself only when you need argv the composed start cannot
 express. Then the layout below applies.
 
+**Release a settled worker; never close it by terminal handle.**
+`worker-release --dispatch <id>` preserves the worker's output first, then closes
+only the terminal that dispatch owns — it will not touch the coordinator, setup
+terminals, or anything whose identity Orca cannot prove. `terminal close` has
+none of those protections and takes a handle that may already be stale: handles
+are runtime-scoped, and `--terminal` is optional on most commands, so a stale one
+can resolve to the active terminal instead. A coordinator session was lost here
+on 2026-08-19 by closing three already-closed worker handles. Use `terminal
+close` only for panes you opened yourself that no dispatch owns.
+
 ## Pane layout
 
 Workers stack down the right-hand side, so the coordinator stays on the left and
@@ -212,6 +222,41 @@ For a review dispatch, build the evidence pack: the diff and exact base ref,
 `graphify explain` for every changed node, `graphify path` from each changed node
 to the project's critical nodes, the invariant boundaries that apply, and any
 measurements already taken.
+
+## Memory belongs to the coordinator
+
+A cross-session memory store (claude-mem or equivalent) hooks every session of
+that CLI, including every worker. Left alone it inverts what it is for: measured
+2026-08-19, a smoke-test probe was persisted under the project's own name while
+the real coordinator session was filed under the home directory's name. Three
+months later nothing distinguishes a throwaway prompt from an accepted decision.
+
+The rule follows the gate, not the directory: **whoever cannot open a gate
+cannot write to memory.** The coordinator spans work and keeps its store.
+Workers are disposable by construction — their output goes to a report path and
+the coordinator decides what becomes durable.
+
+Claude Code loads plugins from `CLAUDE_CONFIG_DIR`, so a worker launched against
+a config directory with no plugins runs without memory hooks. `agentkit
+preflight` maintains that directory at `~/.agentkit/worker-config`: empty
+`enabledPlugins`, the project marked trusted, and the real `.credentials.json`
+symlinked in. The link is not optional — trust and credentials are both stored
+per config directory, so without it every worker starts unauthenticated and
+untrusted. Layer 1 never gets the prefix; 2a and 2b always do.
+
+Do not reach for `--bare` for this. It skips hooks but also drops OAuth, keychain
+reads, and CLAUDE.md discovery, so a subscription worker cannot authenticate and
+would not read its own instructions.
+
+## Permissions
+
+Workers run with the permissive-but-answerable tier, not with checks removed:
+`--permission-mode auto` for claude, `-a on-request` for codex, `--mode
+accept-edits` for agy. Bypassing permission checks outright deletes the question
+instead of answering it, which is the wrong trade in a repository where an agent
+can change how a vehicle behaves. When the permissive tier does stop to ask,
+`agentkit preflight --launch` reports it as a blocker rather than letting the
+pane hang unexplained.
 
 ## Knowledge stores: the vault and the graph
 
