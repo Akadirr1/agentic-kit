@@ -169,19 +169,38 @@ LAUNCH = {
 WORKER_CONFIG = Path.home() / ".agentkit" / "worker-config"
 
 
-def ensure_worker_config(root: Path):
-    """Create the memory-free config directory for workers. Returns (path, ok).
+# Identity and first-run state are stored per config directory, not per machine.
+# A bare directory therefore produces a worker that runs the onboarding wizard
+# (theme picker) and then asks the human to log in — in a pane nobody is
+# watching. Carry exactly these across from the real config: who the user is,
+# that onboarding is done, and the credentials. Nothing else, so no plugin,
+# hook, or project history follows the worker.
+IDENTITY_KEYS = ("oauthAccount", "userID", "machineID", "installMethod",
+                 "hasCompletedOnboarding", "lastOnboardingVersion",
+                 "firstStartTime", "claudeCodeFirstTokenDate",
+                 "hasSeenTasksHint", "hasSeenAutoDefaultNotice",
+                 "hasSeenAutoModeEntryWarning", "subscriptionNoticeCount",
+                 "hasAvailableSubscription")
 
-    Trust is recorded per config directory, so the project must be trusted here
-    too or every worker stops on the trust dialog in a directory the human never
-    sees. The coordinator has already accepted it under the default config.
-    """
-    src = Path.home() / ".claude" / ".credentials.json"
+
+def ensure_worker_config(root: Path):
+    """Create the memory-free config directory for workers. Returns (path, ok)."""
+    home = Path.home() / ".claude"
+    src = home / ".credentials.json"
     try:
         WORKER_CONFIG.mkdir(parents=True, exist_ok=True)
-        settings = WORKER_CONFIG / "settings.json"
-        if not settings.exists():
-            settings.write_text('{"enabledPlugins": {}}\n', encoding="utf-8")
+
+        # settings: keep the theme so the wizard has nothing to ask, drop every
+        # plugin and hook — a worker must not inherit the coordinator's tooling.
+        theme = "dark"
+        try:
+            theme = json.loads((home / "settings.json").read_text(encoding="utf-8")) \
+                .get("theme", "dark")
+        except Exception:
+            pass
+        (WORKER_CONFIG / "settings.json").write_text(
+            json.dumps({"theme": theme, "enabledPlugins": {}, "hooks": {}},
+                       indent=2) + "\n", encoding="utf-8")
 
         cj = WORKER_CONFIG / ".claude.json"
         data = {}
@@ -190,12 +209,18 @@ def ensure_worker_config(root: Path):
                 data = json.loads(cj.read_text(encoding="utf-8"))
             except Exception:
                 data = {}
-        projects = data.setdefault("projects", {})
-        key = _nfc(root)
-        if not projects.get(key, {}).get("hasTrustDialogAccepted"):
-            projects.setdefault(key, {})["hasTrustDialogAccepted"] = True
-            cj.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n",
-                          encoding="utf-8")
+        real = {}
+        try:
+            real = json.loads((Path.home() / ".claude.json").read_text(encoding="utf-8"))
+        except Exception:
+            pass
+        for k in IDENTITY_KEYS:
+            if k in real:
+                data[k] = real[k]
+        data.setdefault("projects", {})
+        data["projects"].setdefault(_nfc(root), {})["hasTrustDialogAccepted"] = True
+        cj.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n",
+                      encoding="utf-8")
 
         link = WORKER_CONFIG / ".credentials.json"
         if not src.exists():
@@ -203,7 +228,7 @@ def ensure_worker_config(root: Path):
         if not link.is_symlink() or link.resolve() != src.resolve():
             link.unlink(missing_ok=True)
             link.symlink_to(src)
-        return WORKER_CONFIG, True
+        return WORKER_CONFIG, bool(real.get("oauthAccount"))
     except Exception:
         return WORKER_CONFIG, False
 
@@ -212,7 +237,11 @@ def ensure_worker_config(root: Path):
 BLOCKERS = ("do you trust", "trust this", "trust folder", "[y/n]", "(y/n)",
             "press enter to continue", "hooks need review",
             "trust all and continue", "select an option", "choose an option",
-            "grant access", "sign in to continue")
+            "grant access", "sign in to continue",
+            # a fresh config runs the onboarding wizard in a pane nobody watches
+            "choose the text style", "let's get started", "paste code here",
+            # codex stops on its own version prompt
+            "update available", "skip until next version")
 
 # Substrings that only mean "still starting". agy prints "not signed in" for
 # minutes before the session resolves and the prompt appears; failing on the
@@ -281,7 +310,10 @@ def effective(role: dict, toggles: dict) -> dict:
 def launch_cmd(r: dict, unblock=True, memoryless=False) -> str:
     """Build the exact shell command a worker pane would run for this role."""
     cli, model, effort = r["cli"], r.get("model", ""), r.get("effort", "")
-    prefix = f"CLAUDE_CONFIG_DIR={WORKER_CONFIG} " if (memoryless and cli == "claude") else ""
+    # Not claude-only: claude-mem installs into codex too, and its codex hook
+    # resolves the plugin through the same CLAUDE_CONFIG_DIR. Harmless for CLIs
+    # that ignore the variable, so every disposable worker carries it.
+    prefix = f"CLAUDE_CONFIG_DIR={WORKER_CONFIG} " if memoryless else ""
     if cli == "codex":
         parts = ["codex"] + ([f'-c model="{model}"'] if model else [])
         if effort:
