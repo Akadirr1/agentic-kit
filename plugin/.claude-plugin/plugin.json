@@ -1,6 +1,6 @@
 {
   "name": "agentkit",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "A coordination layer for multi-agent work: one coordinator, role profiles with per-role model pinning, deterministic zero-token checkpoints, launch preflight, and memory that stays with the coordinator instead of following every disposable worker.",
   "author": {
     "name": "Abdülkadir"

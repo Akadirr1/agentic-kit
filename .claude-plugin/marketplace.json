@@ -10,7 +10,7 @@
   "plugins": [
     {
       "name": "agentkit",
-      "version": "0.1.0",
+      "version": "0.1.1",
       "source": "./plugin",
       "category": "workflow",
       "description": "One coordinator, role profiles with per-role model pinning, deterministic zero-token checkpoints, launch preflight, and memory that stays with the coordinator instead of following every disposable worker.",
