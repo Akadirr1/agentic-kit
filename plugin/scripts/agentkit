@@ -225,12 +225,30 @@ def ensure_worker_config(root: Path):
         link = WORKER_CONFIG / ".credentials.json"
         if not src.exists():
             return WORKER_CONFIG, False
-        if not link.is_symlink() or link.resolve() != src.resolve():
+        if not _linked(link, src):
             link.unlink(missing_ok=True)
-            link.symlink_to(src)
+            try:
+                link.symlink_to(src)
+            except OSError:
+                # Windows refuses symlinks without Developer Mode or admin
+                # (WinError 1314, found 2026-08-20 on the first Windows run).
+                # A hard link needs no privilege and shares the same bytes,
+                # so a token refresh written in place is seen on both sides.
+                # A refresh done by rename would detach it; this runs on every
+                # preflight and launch, and re-links when samefile() no longer
+                # holds, so the window is one session at most.
+                os.link(src, link)
         return WORKER_CONFIG, bool(real.get("oauthAccount"))
     except Exception:
         return WORKER_CONFIG, False
+
+
+def _linked(link: Path, src: Path) -> bool:
+    """True if `link` already reaches `src` — as a symlink or a hard link."""
+    try:
+        return link.exists() and os.path.samefile(link, src)
+    except OSError:
+        return False
 
 # Substrings that mean the TUI is waiting for a human. These do not clear on
 # their own; something has to answer them.
